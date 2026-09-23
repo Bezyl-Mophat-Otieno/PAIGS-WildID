@@ -10,7 +10,7 @@ pydantic>=2.7
 sqlalchemy>=2.0
 psycopg2-binary>=2.9   # PostgreSQL driver (SQLite used by default for prototype/tests, no driver needed)
 
-# Bioinformatics (used from Stage 1 onward)
+# Bioinformatics (in use from Stage 1: format validity checking)
 biopython>=1.83
 numpy>=1.26
 pandas>=2.2
