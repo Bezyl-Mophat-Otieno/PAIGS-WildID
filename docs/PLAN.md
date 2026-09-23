@@ -12,19 +12,21 @@ The system is split into two independent pieces that talk over an API: a **backe
 - **Frontend (React SPA):** uploads files, shows results stage by stage, and lets an analyst edit configuration (thresholds, markers). It never computes anything itself.
 - **External tool (BLAST+):** a separate program, not a Python library, invoked by the backend as a subprocess to do the actual sequence-matching search.
 
-Each unit of work is a **Run** (one analyst's attempt to identify one sample) made of ordered **Stages**: Import, AB1 Extraction, QC, Orientation Detection, Consensus Building, Trim, FASTA, BLAST, Identification, Report. Every stage is a row in the database with its own status and stored output — this is what makes stop/resume and back-and-forth review possible from the UI, covered in full in the Run/Stage section below.
+Each unit of work is a **Run** (one analyst's attempt to identify one sample, from either one or two AB1 files) made of ordered **Stages**: Import, Format Validity Check, AB1 Extraction, Coarse Sanity Check, Trimming, Orientation Detection, Consensus Building, Usability Check, FASTA, BLAST, Identification, Report. Every stage is a row in the database with its own status and stored output — this is what makes stop/resume and back-and-forth review possible from the UI, covered in full in the Run/Stage section below.
 
 ```mermaid
 flowchart TD
-    A[Import<br/>2 AB1 files, any order] --> B[AB1 extraction<br/>per file]
-    B --> C[QC<br/>per file, independent]
-    C --> D[Orientation detection<br/>align fwd vs reverse]
-    D --> E[Consensus building<br/>merge overlapping reads]
-    E --> F[Trim<br/>remove leftover noisy ends]
-    F --> G[FASTA<br/>serialize sequence]
-    G --> H[BLAST+<br/>search reference DB]
-    H --> I[Identification<br/>apply rules]
-    I --> J[Report<br/>PDF + audit trail]
+    A[Import<br/>1 or 2 AB1 files] --> B[Format validity check<br/>per file, hard stop]
+    B --> C[AB1 extraction<br/>per file]
+    C --> D[Coarse sanity check<br/>per file, lenient hard stop]
+    D --> E[Trimming<br/>per file, independent]
+    E --> F[Orientation detection<br/>only if 2 reads survive]
+    F --> G[Consensus building<br/>merge oriented reads]
+    G --> H[Usability check<br/>the real accept/reject gate]
+    H --> I[FASTA<br/>serialize sequence]
+    I --> J[BLAST+<br/>search reference DB]
+    J --> K[Identification<br/>apply rules]
+    K --> L[Report<br/>PDF + audit trail]
 ```
 
 Each box above is one **Stage** record: it has a defined input, a defined output, a status (pending / running / completed / failed), and it persists independently so any stage can be opened and reviewed without re-running the ones before or after it.
@@ -61,97 +63,122 @@ Each box above is one **Stage** record: it has a defined input, a defined output
 
 ## Stage 0 — Import
 
-**What happens:** the analyst uploads **two** `.ab1` files for the sample — a forward and a reverse read of the same DNA fragment. The system does not require them to be uploaded in a specific order; which file is "forward" and which is "reverse" is worked out automatically later, in Orientation Detection. The system creates a new **Run** record immediately, before any processing starts.
+**What happens:** the analyst uploads into two labeled slots, **"Forward Read"** and **"Reverse Read"**. Both single-file and two-file are equally valid, first-class entry points — a single file is not a degraded fallback of the two-file case, it's the path the original brief describes, and the pipeline supports it fully. The system does not require the labels to be correct; which file is truly forward and which is reverse is confirmed later, in Orientation Detection (Stage 5) — a label/detected mismatch is only ever noted, never blocking. The system creates a new **Run** record immediately, before any processing starts.
 
-**Labeling:** the sample label pre-fills from the filename with a timestamp appended at the moment upload begins (e.g. `WILD_001_2026-09-20T14-32`), editable by the analyst at any time.
+**Labeling:** the sample label pre-fills from the filename(s) with a timestamp appended at the moment upload begins (e.g. `WILD_001_2026-09-20T14-32`), editable by the analyst at any time.
 
-**Output:** both original AB1 files stored permanently and untouched, plus a Run record: `{ run_id, sample_id, original_filenames: [file_a, file_b], created_at, current_stage: "import", status: "completed" }`.
+**Output:** the original AB1 file(s) stored permanently and untouched, plus a Run record: `{ run_id, sample_id, original_filenames: [file_a] or [file_a, file_b], created_at, current_stage: "import", status: "completed" }`.
 
 **Why it's its own stage, not a pre-step:** a failed or abandoned upload should still show up in the analyst's run history as an incomplete run — nothing here is transient.
 
-## Stage 1 — AB1 extraction
+## Stage 1 — Format validity check
 
-**What happens:** the backend parses each of the two AB1 files independently, pulling out the raw sequence and per-base Phred quality scores for each. No judgment is applied yet — this is pure extraction, run twice, once per file.
+**What happens:** a hard stop, and deliberately the very first check — before anything about read quality is even considered. Is each uploaded file a **structurally valid AB1 file** at all: can it be opened and parsed, is it not corrupted, does it have the internal structure an AB1 file is supposed to have? This is a yes/no question about file integrity, unrelated to how good the DNA read itself is.
 
-**Tool:** Biopython's `Bio.SeqIO`, which has a built-in AB1 parser — no need to write binary-parsing code by hand.
+**Tool:** Biopython's `Bio.SeqIO` — attempting the parse itself is the check; a parse failure is the fail condition.
 
-**Input:** the two stored AB1 files from Stage 0.
+**Input:** the stored AB1 file(s) from Stage 0.
 
-**Output:** two extraction results, e.g. `{ read_a: { raw_sequence: "ATGCTAGC...", raw_length: 812, quality_scores: [...] }, read_b: { raw_sequence: "...", raw_length: 798, quality_scores: [...] } }`.
+**Output:** `{ file_a: { valid: true }, file_b: { valid: true } }` (or `valid: false` with a reason). A file failing here is rejected immediately with a specific, plain-language message — never silently passed through.
 
-## Stage 2 — Quality Control (QC)
+## Stage 2 — AB1 extraction
 
-**What happens:** each of the two reads is checked **independently**, using the same rules as a single-file QC — nothing about the QC rules themselves changes. This has to happen before any alignment/consensus step: aligning a bad read against a good one wouldn't fail cleanly, it could quietly corrupt an otherwise-good consensus.
+**What happens:** for each file that passed Stage 1, the backend parses the sequence and per-base quality scores out of the binary AB1 structure. No judgment is applied yet — this is pure extraction, run once per file.
+
+**Tool:** Biopython's `Bio.SeqIO`, which has a built-in AB1 parser.
+
+**Input:** the format-valid AB1 file(s) from Stage 1.
+
+**Output:** one extraction result per file, e.g. `{ read_a: { raw_sequence: "ATGCTAGC...", raw_length: 812, quality_scores: [...] } }` (and `read_b` if a second file was provided).
+
+## Stage 3 — Coarse sanity check
+
+**What happens:** a second hard stop, but a deliberately **lenient** one — it exists only to catch genuinely broken reads, not the normal noisy edges every raw Sanger read has. Checks per file: is there any real signal at all (not almost entirely `N`, the code for a completely unreadable position), is the raw length above an absurdly-low floor. This is *not* the real accept/reject decision for the sample — that happens later, in Stage 7, after cleanup.
 
 **Rules to configure (with domain experts, not guessed):**
 
-- Minimum sequence length
-- Minimum mean Phred quality score
-- Maximum tolerable count of N (ambiguous) bases
-- Overall pass condition — e.g. PASS / FAIL, or PASS-WITH-WARNINGS
+- Maximum proportion of `N` bases tolerated in the raw read
+- Minimum raw read length
 
-**Tool:** NumPy for the numeric calculations (mean quality, percentage below a quality threshold).
+**Tool:** NumPy for the simple proportions/counts involved.
 
-**Input:** Stage 1's two extracted reads (raw sequence + quality scores), checked one at a time.
+**Input:** Stage 2's extracted read(s).
 
-**Output:** one QC result per read, e.g.:
+**Output:** per file, e.g. `{ read_a: { n_proportion: 0.01, raw_length: 812, status: PASS } }`.
 
-```
-read_a: { mean_phred: 34.8, ambiguous_bases: 0, bases_below_q20: 21, status: PASS }
-read_b: { mean_phred: 31.2, ambiguous_bases: 2, bases_below_q20: 34, status: PASS }
-```
-
-**Branching — what happens if the two reads don't agree on QC:**
+**Branching — what happens with two files if one fails here:**
 
 | Case | Outcome |
 | --- | --- |
-| Both reads PASS | Proceed to Orientation Detection + Consensus Building as normal |
-| One read PASSes, the other FAILs | **Default (chosen for now): single-read fallback** — proceed with the passing read alone, skip Orientation Detection and Consensus Building, go straight to Trimming/FASTA on that one read. The report carries a clear "single-read, no consensus" flag. |
-| Both reads FAIL | Run stops here, same as the single-file behavior |
+| Both reads PASS | Proceed to Trimming on both, then Orientation Detection + Consensus Building |
+| One read PASSes, the other FAILs | Proceed with the passing read alone, single-read path from here on; report flags `single_read_reason: "qc_failure"` |
+| Both reads FAIL | Run stops here |
+| Only one file was ever uploaded and it PASSes | Proceeds as a deliberate single-read run; report flags `single_read_reason: "single_file_provided"` |
 
-The single-read fallback was chosen as the default because a single good read is still usable evidence, just weaker than a consensus — common practice in real sequencing workflows. The alternative, stricter option (stop the whole run and ask for a re-upload when either read fails) remains open for the domain team to choose instead if they'd rather never report on single-read evidence.
+## Stage 4 — Trimming
 
-## Stage 3 — Orientation detection
+**What happens:** sequencers are least reliable at the leading and trailing ends of a read — a known, physical limitation of Sanger sequencing, not a defect in any particular sample. This stage runs on each sanity-checked read **independently, before the two reads are ever compared to each other** — using the per-base Phred quality scores, it finds where the reliable stretch of the read begins and ends, and cuts off everything outside that window.
 
-**Only runs when both reads passed QC (Stage 2).** A forward and reverse read cover the same physical DNA fragment but from opposite ends, reading opposite strands — so before they can be compared, the system needs to know which orientation each is in.
+**Why order matters here:** trimming has to happen before Orientation Detection and Consensus Building, not after — comparing two reads while their noisy raw edges are still attached risks the alignment being thrown off by exactly the parts that are least trustworthy.
 
-**What happens:** the system attempts a pairwise alignment of read A against read B as-is, and separately against the reverse complement of read B (reversed order, each base swapped for its pair: A<->T, G<->C). Whichever attempt produces a strong overlap tells the system the correct orientation — this is a deterministic check, not a guess, so the analyst never has to know or specify which file is forward and which is reverse.
+**Why it must be logged, not just applied silently:** trimming changes the exact data that later gets compared against the reference database, so the parameters used need to be part of the audit trail.
 
-**Tool:** Biopython's `Bio.Align.PairwiseAligner` — sufficient for short Sanger reads (hundreds of base pairs); no need for heavyweight genome-assembly tools.
+**Tool:** simple logic over the quality scores already extracted — no new library needed.
 
-**Input:** Stage 2's two QC-passed reads.
+**Rules to configure:** the quality threshold defining the "reliable window," and a minimum window size below which a read is treated as having nothing left to keep.
 
-**Output:** `{ orientation: "read_b_reverse_complemented", alignment_score: 812, overlap_length: 780 }`. If neither orientation produces a usable overlap, the run flags for review rather than guessing.
+**Input:** each sanity-checked read from Stage 3.
 
-## Stage 4 — Consensus building
+**Output:** per file, e.g. `{ read_a: { trimmed_sequence: "ATCGATCG...", trimmed_length: 694, trim_params: { quality_threshold: 20 } } }`.
 
-**What happens:** with both reads in the same orientation, the system aligns them position by position and builds one merged **consensus sequence**. At every aligned position it picks the base from whichever read has higher confidence there. This matters most in the middle of a read: an end can simply be trimmed away, but a low-confidence patch in the middle can't be cut without losing needed sequence — having a second, overlapping read means the system can check what the other read says at that exact position instead.
+## Stage 5 — Orientation detection
 
-**Conflicts:** if both reads are confident but disagree at a position, that's a genuine conflict, not something to silently resolve by guessing — it's recorded as an ambiguous position and surfaced to the analyst rather than papered over.
+**Only runs when two reads survived Trimming.** A forward and reverse read cover the same physical DNA fragment but from opposite ends, reading opposite strands — so before they can be compared, the system needs to know which orientation each is actually in.
 
-**Tool:** built on the same `Bio.Align` alignment from Stage 3; the consensus itself is straightforward per-position logic over the aligned quality scores.
+**What happens:** the system attempts a pairwise alignment of the two trimmed reads as-is, and separately with one reverse-complemented (reversed order, each base swapped for its pair: A↔T, G↔C). Whichever attempt produces a strong overlap reveals the correct orientation — a deterministic check, not a guess. This is entirely independent of which upload slot each file was placed in: if the analyst's "Forward"/"Reverse" labels turn out to disagree with what's actually detected, that's recorded as `label_orientation_mismatch: true` and shown to the analyst as a plain informational note — it never blocks the run, since nothing about the science was actually wrong.
 
-**Input:** Stage 3's oriented read pair.
+**Tool:** Biopython's `Bio.Align.PairwiseAligner` — sufficient for short Sanger reads; no need for heavyweight genome-assembly tools.
+
+**Input:** Stage 4's two trimmed reads.
+
+**Output:** `{ orientation: "read_b_reverse_complemented", alignment_score: 812, overlap_length: 780, label_orientation_mismatch: false }`. If neither orientation produces a usable overlap, the run flags for review rather than guessing — this most often means the two files aren't actually a matching pair.
+
+## Stage 6 — Consensus building
+
+**What happens:** with both reads in the same orientation, the system aligns them position by position and builds one merged sequence — picking the more trustworthy base at each spot:
+
+- Both reads agree → keep it.
+- They disagree → compare Phred quality scores at that position, keep the more confident one.
+- One read gives a confident, definite base and the other gives an **IUPAC ambiguity code** (a standard code meaning "it's one of these options," e.g. `W` = "A or T") that's consistent with the confident call → the definite base wins.
+- Both confident but genuinely disagree → flagged as an ambiguous position for the analyst, never silently resolved.
+
+**Tool:** built on the same `Bio.Align` alignment from Stage 5; the consensus logic itself is straightforward per-position comparison, plus a small IUPAC code lookup table.
+
+**Input:** Stage 5's oriented read pair.
 
 **Output:** `{ consensus_sequence: "ATCGATCG...", consensus_length: 780, ambiguous_positions: [] }`.
 
-## Stage 5 — Trimming
+## Stage 7 — Usability check
 
-**What happens:** sequencers are least reliable at the leading and trailing ends of a read. This stage removes those low-confidence stretches, keeping only the reliable middle. When a consensus was built (Stage 4), the middle-section noise has typically already been resolved by comparing the two reads — this stage now mainly cleans up whatever non-overlapping leftover ends remain.
+**What happens:** this is the real accept/reject gate for the sample — replacing what used to be a single upfront quality check. It runs on whatever actually survived cleanup: the consensus sequence (two-read path) or the single trimmed read (single-read path, whether that's because only one file was uploaded or the other failed Stage 3). The question here is deliberately different from Stage 3's: not "was the raw input catastrophically bad," but "is what we're about to search good enough to trust."
 
-**Why it must be logged, not just applied silently:** trimming changes the exact data that later gets compared against the reference database, so the trimming parameters used need to be part of the audit trail.
+**Rules to configure:**
 
-**Input:** Stage 4's consensus sequence when both reads passed QC and were merged, or the single QC-passed read directly when Stage 2 fell back to single-read mode.
+- Minimum length of the surviving sequence
+- Minimum mean quality of the surviving sequence
+- Maximum unresolved ambiguous positions tolerated (two-read path only)
 
-**Output:** `{ trimmed_sequence: "ATCGATCG...", trimmed_length: 694, trim_params: { quality_threshold: 20 } }`.
+**Input:** Stage 6's consensus sequence, or Stage 4's single trimmed read.
 
-## Stage 6 — FASTA generation
+**Output:** `{ final_length: 780, mean_quality: 33.4, ambiguous_positions: 0, status: PASS }`. A `FAIL` here ends the run — this is the point where a sample is genuinely judged not worth searching, based on the cleaned-up result rather than the raw upload.
 
-**What happens:** a pure format-conversion step. The trimmed sequence is written into FASTA, the standard text format nearly every bioinformatics tool (including BLAST) expects as input. No business logic here — it's a checkpoint that produces a portable artifact.
+## Stage 8 — FASTA generation
 
-**Tool:** Biopython's `Bio.SeqIO` again, for writing FASTA.
+**What happens:** a pure format-conversion step. The sequence that passed Stage 7 is written into FASTA, the standard text format nearly every bioinformatics tool (including BLAST) expects as input.
 
-**Input:** Stage 3's trimmed sequence.
+**Tool:** Biopython's `Bio.SeqIO`, for writing this time.
+
+**Input:** Stage 7's usable sequence.
 
 **Output:** a `.fasta` file, e.g.:
 
@@ -160,15 +187,15 @@ The single-read fallback was chosen as the default because a single good read is
 ATCGATCGATCGATCGATCGATCG
 ```
 
-## Stage 7 — BLAST comparison
+## Stage 9 — BLAST comparison
 
-**What happens:** the cleaned FASTA sequence is searched against a curated reference database of known species sequences. BLAST doesn't require an exact match — it finds the best approximate alignments, allowing for mismatches and gaps, because DNA between related individuals or species is never 100% identical.
+**What happens:** the FASTA sequence is searched against a curated reference database of known species sequences. BLAST finds the best approximate alignments, allowing for mismatches and gaps, since DNA between related species is never identical.
 
-**How it's invoked:** BLAST+ is a separate compiled program, not a Python package — the backend installs it on the server and calls it as a subprocess (Biopython's `Bio.Blast.Applications` can wrap this call). This has a deployment implication: the server/Docker image needs the BLAST+ binary baked in, not just listed in `requirements.txt`.
+**How it's invoked:** BLAST+ is a separate compiled program, not a Python package — the backend installs it on the server and calls it as a subprocess (Biopython's `Bio.Blast.Applications` can wrap this call). The server/Docker image needs the BLAST+ binary baked in, not just listed in `requirements.txt`.
 
-**The reference database:** built ahead of time from a curated FASTA file of known species (species/taxonomy, sequence, accession number, source, database version) using BLAST's `makeblastdb` tool. This reference database is versioned separately from the app's own SQL database, and the version used must be recorded per run for reproducibility.
+**The reference database:** built ahead of time from a curated FASTA file of known species (species/taxonomy, sequence, accession number, source, database version) using BLAST's `makeblastdb` tool, versioned separately from the app's own database — the version used must be recorded per run.
 
-**Input:** Stage 4's FASTA file + the current reference database.
+**Input:** Stage 8's FASTA file + the current reference database.
 
 **Output:** a ranked list of candidate hits, e.g.:
 
@@ -178,38 +205,50 @@ ATCGATCGATCGATCGATCGATCG
 | 2 | Panthera pardus | 94.10% | 96.7% | 1e-90 | 980 | REF002 |
 | 3 | Panthera tigris | 93.80% | 95.9% | 2e-88 | 965 | REF003 |
 
-## Stage 8 — Identification engine
+## Stage 10 — Identification engine
 
-**What happens:** the ranked BLAST hits are run through a rules layer that decides a final category. The top hit is never taken at face value — rules exist specifically so the system doesn't just accept the first match.
+**What happens:** the ranked BLAST hits are run through a rules layer that decides a final category. The top hit is never taken at face value.
 
-**Who defines the rules:** the domain experts (the forensic scientists currently doing this manually in Geneious), not invented by the engineering team. Thresholds should live in a configuration table, editable without a code deploy, because they can reasonably differ per DNA marker or species.
-
-**Example rule set (illustrative, not final):**
-
-- Minimum identity: 98%
-- Minimum coverage: 90%
+**Who defines the rules:** the domain experts, not invented by the engineering team. Thresholds live in configuration, not code — see "Configuration model" below.
 
 **Possible outcomes:**
 
 - **PASS** — top match clearly clears the thresholds and no other candidate is close
-- **AMBIGUOUS** — multiple candidates score close together (e.g. two closely related species)
+- **AMBIGUOUS** — multiple candidates score close together
 - **REVIEW REQUIRED** — thresholds aren't met, or the result looks taxonomically inconsistent
 
-Whether QC failure should be a distinct fourth status (rather than ending the run at Stage 2) is worth confirming with the domain team rather than assuming.
-
-**Input:** Stage 5's ranked hit list + the current threshold configuration.
+**Input:** Stage 9's ranked hit list + the run's active threshold configuration.
 
 **Output:** `{ candidate_species: "Panthera leo", identity: 99.71, coverage: 98.2, status: "PASS", thresholds_applied: {...} }`.
 
-## Stage 9 — Reporting
+## Stage 11 — Reporting
 
-**What happens:** every prior stage's data is assembled into one auditable report — not just the final answer, but the full decision trail: sample ID, QC result, trimming applied, reference DB version searched, every candidate's scores, which thresholds were used, and the final status with its limitations stated explicitly (e.g. "expert-assistance result, not a standalone forensic conclusion").
+**What happens:** every prior stage's data is assembled into one auditable report — sample ID, format/sanity results, trimming applied, orientation outcome (including any label mismatch), consensus conflicts if any, the usability decision, reference DB version, every BLAST candidate's scores, thresholds used, final status, and stated limitations (e.g. "expert-assistance result, not a standalone forensic conclusion").
 
-**Tool:** ReportLab (or WeasyPrint, if HTML-to-PDF styling is preferred) to generate the PDF.
+**Tool:** ReportLab (or WeasyPrint) to generate the PDF.
 
 **Input:** the stored output of every prior stage for this Run.
 
 **Output:** one PDF report per run, plus a database record of the report for later retrieval.
+
+## Configuration model
+
+Thresholds live in a config table with sensible starting defaults (pending real domain review) for: Stage 3's sanity thresholds, Stage 4's trim quality threshold, Stage 7's usability thresholds, and Stage 10's identity/coverage thresholds (potentially per DNA marker or species).
+
+- **Global defaults** apply unless overridden.
+- **Before starting a run**, the analyst can review and override the defaults for that specific run — the values actually used are a deliberate choice at the point of analysis, not silently inherited.
+- **After a run completes, for MVP:** trying different settings means triggering a **whole new Run** — same uploaded file(s), adjusted configuration — rather than editing or re-running any piece of the original. The two Runs sit side by side, fully independent and comparable; nothing about the original is ever touched. Stage-level partial re-runs are not part of the MVP.
+
+## Validation
+
+A product capability, not just a development practice — lab staff can run this themselves, anytime, against a batch of samples with already-known correct answers, to check the pipeline is behaving.
+
+A **Validation Batch** is a set of Runs, each tagged with an `expected_species` value the pipeline never sees or uses for anything except final scoring. Two modes:
+
+- **Known samples** — expected answers known upfront; mainly useful during development to sanity-check behavior.
+- **Blinded set** — expected answers withheld from whoever runs the batch until after scoring, specifically to prevent unconsciously tuning thresholds to pass known answers.
+
+**Output — a scorecard** covering exactly what the brief asks for: correct / incorrect / ambiguous / review-required rates, reproducibility (does the same input, run twice, give the same result), and processing time per sample.
 
 ## Run/Stage data model
 
@@ -230,7 +269,7 @@ Each **Stage** is its own persisted row, not a transient function call:
 ```
 Stage
  ├─ run_id
- ├─ stage_type: import | ab1_extraction | qc | orientation | consensus | trim | fasta | blast | identification | report
+ ├─ stage_type: import | format_check | ab1_extraction | sanity_check | trim | orientation | consensus | usability_check | fasta | blast | identification | report
  ├─ status: pending | running | completed | failed | skipped
  ├─ input_ref (usually the previous stage's output)
  ├─ output (the stored result)
@@ -240,30 +279,35 @@ Stage
 
 **This is what makes stop/resume and free navigation possible:** the run simply sits at `current_stage` until someone triggers the next one — nothing forces stages to chain automatically. Every completed stage's output is a stored row, so reviewing an earlier step is just a read, not a recomputation.
 
-**Immutability rule:** a stage's output is never silently overwritten. If a stage is re-run with different parameters (e.g. new thresholds), that creates a new `attempt_number` for that stage rather than replacing the old result — preserving a complete history of everything that was tried.
+**Immutability rule:** a stage's output, once written, is never overwritten. For MVP, there is no stage-level re-run: if an analyst wants to see how a result would change under different configuration, they trigger a **whole new Run** using the same uploaded file(s) (see `POST /runs/{id}/rerun` below) — the original Run is untouched, and the two Runs sit side by side for direct comparison.
 
 ## UI flow
 
 The UI behaves as a **tab-based inspector**, not a forced linear wizard:
 
-- A stepper/rail lists all stages with a status icon each: done, current, pending, or failed.
+- A stepper/rail lists all stages with a status icon each: done, in progress, pending, or failed.
+- Uploading triggers the entire pipeline automatically — no per-stage clicking. The stepper simply advances live as each stage completes on the backend.
 - Clicking any **completed** stage opens its stored output instantly, read-only — no recomputation, just a fetch of what's already persisted.
-- The **current** pending stage shows a "Run this stage" action.
-- A run can be abandoned mid-way and resumed later from a history/list view, which surfaces `current_stage` so the analyst can find where they left off.
-- The backend enforces stage ordering (e.g. it refuses to run BLAST if QC hasn't completed) — this constraint is never trusted to the frontend alone.
+- A run in progress can be left and resumed later from a history/list view, which surfaces `current_stage` so the analyst can see how far it got.
+- The backend enforces stage ordering and auto-stop conditions (invalid file, sanity-check failure, no orientation overlap, usability-check failure) — the frontend never decides when to halt.
+- To try different configuration, the analyst uses `POST /runs/{id}/rerun` — a whole new Run, side by side with the original, never a modification of it.
 
 **API shape this implies:**
 
 ```
-POST   /runs                      -> create a run (upload AB1, set label)
+POST   /runs                      -> create a run (upload 1 or 2 AB1 files into labeled slots, set label, optional config overrides)
+POST   /runs/{id}/execute         -> run every stage through to completion automatically
+POST   /runs/{id}/rerun           -> create a brand-new Run reusing this run's file(s), with new config overrides
 GET    /runs                      -> list all runs (history view)
-GET    /runs/{id}                 -> run summary + all stage statuses
-GET    /runs/{id}/stages/{type}   -> get a specific stage's full output
-POST   /runs/{id}/stages/{type}   -> trigger execution of that stage
+GET    /runs/{id}                 -> run summary + all stage statuses (drives the live progress stepper)
+GET    /runs/{id}/stages/{type}   -> get a specific stage's stored output, read-only
 PATCH  /runs/{id}                 -> rename/relabel a run
+GET    /config                    -> list current threshold configs
+PUT    /config/{id}               -> update a threshold config
+POST   /validation-batches        -> run a batch of runs with known expected_species, get a scorecard
 ```
 
-`POST` triggers one specific stage, never the whole pipeline at once — this is what lets results stream in as each stage finishes, instead of the analyst waiting for the entire run to complete before seeing anything.
+Upload triggers `POST /runs` followed immediately by `POST /runs/{id}/execute` — the default path requires no per-stage clicking, since almost every stage is mechanical with nothing for a human to decide mid-flight. The frontend polls `GET /runs/{id}` to drive the live stepper. Past stages remain individually viewable via `GET /runs/{id}/stages/{type}` at any time, instantly, with no recomputation.
 
 ## Technology map
 
@@ -281,6 +325,7 @@ PATCH  /runs/{id}                 -> rename/relabel a run
 | Operational database | PostgreSQL (SQLite acceptable for early prototype) | Runs, Stages, configuration, report metadata |
 | Reference database | BLAST's own indexed format (built via `makeblastdb`) | Curated species sequences BLAST searches against; versioned separately from the operational database |
 | Orientation detection + consensus building | Biopython (Bio.Align.PairwiseAligner) | Aligns forward/reverse reads to detect orientation and merge them into a consensus sequence |
+| Validation batch scoring & stats | pandas + matplotlib/Plotly | Aggregates a Validation Batch's runs into a scorecard (accuracy, ambiguity/review rates, reproducibility, processing time); covers the statistics/visualization role the original brief assigned to R |
 
 Note: BLAST+ is a separate installed program, not a `pip install`-able package — it must be baked into the deployment image, not just listed as a Python dependency.
 
@@ -288,14 +333,17 @@ Note: BLAST+ is a separate installed program, not a `pip install`-able package �
 
 Each stage has a defined input/output contract, so stages can be built and tested independently — the main risk to guard against is the seams between them, mitigated by defining each stage's schema (e.g. as a Pydantic model) before building it.
 
-1. **AB1 extraction** — nothing else can be tested without real sequence data.
-2. **QC** — depends only on Stage 1's output; test against known-good and known-bad sample files.
-3. **Trimming + FASTA** — deterministic, low-risk.
-4. **BLAST integration** — tackled early despite being "stage 5," since it's the highest-uncertainty piece (external binary, environment setup, database indexing).
-5. **Identification/rules engine** — can be prototyped in parallel with #4 using recorded/fake BLAST output, since it only cares about the shape of a result, not how it was produced.
-6. **Reporting** — last, since it aggregates every other stage's finalized schema.
-7. **Run/Stage orchestration + frontend** — wraps around everything once individual stages are proven.
+1. **Format validity check + AB1 extraction** — nothing else can be tested without real, parseable sequence data.
+2. **Coarse sanity check** — depends only on extraction's output; test against known-good and known-catastrophic sample files.
+3. **Trimming** — test with synthetic quality-score arrays so exact trim boundaries can be asserted, not just "it ran."
+4. **Orientation detection + Consensus building** — needs a real or constructed forward/reverse pair with a known overlap; synthetic fixtures (a sequence plus its deliberately reverse-complemented, slightly mutated twin) are worth building here.
+5. **Usability check** — test against outputs from step 4 that are deliberately too short or too ambiguous.
+6. **BLAST integration** — tackled early relative to its position in the pipeline, since it's the highest-uncertainty piece (external binary, environment setup, database indexing).
+7. **Identification/rules engine** — can be prototyped in parallel with #6 using recorded/fake BLAST output.
+8. **Reporting** — aggregates every other stage's finalized schema.
+9. **Run/Stage orchestration, `/execute`, `/rerun` + frontend** — wraps around everything once individual stages are proven.
+10. **Validation batch scoring** — layered on top of a working Run pipeline; needs a small set of known-answer AB1 samples to test against.
 
-Orientation Detection and Consensus Building slot in right after QC is proven (step 2 above) and before Trimming — they're a natural extension of the same "per-read, deterministic" logic, and like BLAST they're worth validating early since pairwise alignment is the one genuinely new algorithmic piece in this addition.
+Orientation Detection and Consensus Building only apply on the two-read path — the single-read path (whether by choice or by QC fallback) skips straight from Trimming to the Usability Check, and both paths converge again before FASTA generation.
 
 For a prototype, aim for a thin, correct, end-to-end version of every stage first — placeholder thresholds, a small reference database — before deepening any single stage. Proving the seams work early is usually riskier than any one stage's internal logic.

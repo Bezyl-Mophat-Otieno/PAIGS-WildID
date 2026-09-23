@@ -1,0 +1,2 @@
+This is a plain text file, not an AB1 sequencer file.
+Used to manually test that /runs rejects non-.ab1 uploads.

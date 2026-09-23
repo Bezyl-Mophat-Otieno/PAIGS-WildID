@@ -1,0 +1,654 @@
+{
+  "info": {
+    "_postman_id": "983d9021-a163-44bb-ac1e-761e869bb0a6",
+    "name": "PAIGS WildID -- Stage 0 (Import)",
+    "description": "Manual test collection for the PAIGS WildID backend, Stage 0 (Import) only.\n\nUpdated 2026-09-23 for the CLAUDE.md rewrite: upload now goes into two independently-optional labeled slots, forward_read and reverse_read -- a single file is a first-class path, not a fallback.\n\nSetup:\n1. From backend/, run: uvicorn app.main:app --reload\n2. Import the PAIGS environment (postman/PAIGS.postman_environment.json) alongside this collection and select it.\n3. Run 'Happy path' top to bottom first -- it captures run_id into the environment for later requests. 'Errors' can be run independently, except 'Patch run - rejects empty label', which reuses run_id.\n\nTest data lives in postman/test-data/ (copies of backend/tests/fixtures/*.ab1, plus a plain-text file for exercising the extension-rejection case).\n\nThis collection will grow as later pipeline stages (format_check, ab1_extraction, sanity_check, ...) are built.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Happy path",
+      "item": [
+        {
+          "name": "Health check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Sanity check that the API is up before running anything else."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create run - forward + reverse reads",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs"
+              ]
+            },
+            "description": "Stage 0 (Import), two-read path. Uploads into the forward_read and reverse_read slots. Both single- and two-file are first-class per the current CLAUDE.md -- this is the two-file case. Saves run_id into the environment for the requests below.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "forward_read",
+                  "type": "file",
+                  "src": "/Users/mac/projects/paigs-wildid/postman/test-data/3100.ab1"
+                },
+                {
+                  "key": "reverse_read",
+                  "type": "file",
+                  "src": "/Users/mac/projects/paigs-wildid/postman/test-data/3730.ab1"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('has id', () => pm.expect(body.id).to.be.a('string'));",
+                  "pm.test('current_stage is import', () => pm.expect(body.current_stage).to.eql('import'));",
+                  "pm.test('status is in_progress', () => pm.expect(body.status).to.eql('in_progress'));",
+                  "pm.test('both filenames present, in slot order', () => {",
+                  "  pm.expect(body.original_filenames).to.eql(['3100.ab1', '3730.ab1']);",
+                  "});",
+                  "pm.environment.set('run_id', body.id);",
+                  "pm.environment.set('run_sample_id', body.sample_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create run - forward read only (single-file path)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs"
+              ]
+            },
+            "description": "Stage 0, single-read path -- a first-class entry point per CLAUDE.md, not a degraded fallback. reverse_read is simply omitted.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "forward_read",
+                  "type": "file",
+                  "src": "/Users/mac/projects/paigs-wildid/postman/test-data/3100.ab1"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('original_filenames has exactly one entry', () => {",
+                  "  pm.expect(body.original_filenames).to.eql(['3100.ab1']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create run - with explicit sample_id label",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs"
+              ]
+            },
+            "description": "Same as the two-read request but supplying a custom label instead of the auto-generated one.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "forward_read",
+                  "type": "file",
+                  "src": "/Users/mac/projects/paigs-wildid/postman/test-data/3100.ab1"
+                },
+                {
+                  "key": "reverse_read",
+                  "type": "file",
+                  "src": "/Users/mac/projects/paigs-wildid/postman/test-data/3730.ab1"
+                },
+                {
+                  "key": "sample_id",
+                  "type": "text",
+                  "value": "WILD_001_MANUAL_QA"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('sample_id matches request', () => {",
+                  "  pm.expect(pm.response.json().sample_id).to.eql('WILD_001_MANUAL_QA');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List runs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs"
+              ]
+            },
+            "description": "History view -- lists every run created so far, most recent first."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('run_id from earlier is present', () => {",
+                  "  const ids = pm.response.json().map(r => r.id);",
+                  "  pm.expect(ids).to.include(pm.environment.get('run_id'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get run by id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs/{{run_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id}}"
+              ]
+            },
+            "description": "Run summary + every stage's status. Only 'import' should be completed at this point (format_check, ab1_extraction, ... are not built yet)."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('import stage completed', () => {",
+                  "  const importStage = body.stages.find(s => s.stage_type === 'import');",
+                  "  pm.expect(importStage.status).to.eql('completed');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get import stage output",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs/{{run_id}}/stages/import",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id}}",
+                "stages",
+                "import"
+              ]
+            },
+            "description": "The import stage's full stored output, including the stored filenames on disk."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('output lists both original filenames, in slot order', () => {",
+                  "  pm.expect(body.output.original_filenames).to.eql(['3100.ab1', '3730.ab1']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rename run (PATCH)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/runs/{{run_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id}}"
+              ]
+            },
+            "description": "Relabels the run created above.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sample_id\": \"WILD_001_RENAMED\"\n}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('sample_id updated', () => {",
+                  "  pm.expect(pm.response.json().sample_id).to.eql('WILD_001_RENAMED');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Errors",
+      "item": [
+        {
+          "name": "Create run - rejects when no files provided",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs"
+              ]
+            },
+            "description": "At least one of forward_read / reverse_read is required.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "sample_id",
+                  "type": "text",
+                  "value": "WILD_EMPTY"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create run - rejects non-.ab1 file (two-read path)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs"
+              ]
+            },
+            "description": "Every provided upload must have a .ab1 extension.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "forward_read",
+                  "type": "file",
+                  "src": "/Users/mac/projects/paigs-wildid/postman/test-data/3100.ab1"
+                },
+                {
+                  "key": "reverse_read",
+                  "type": "file",
+                  "src": "/Users/mac/projects/paigs-wildid/postman/test-data/not_a_sequence.txt"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create run - rejects non-.ab1 file (single-file path)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs"
+              ]
+            },
+            "description": "Same extension rule applies on the single-file path.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "forward_read",
+                  "type": "file",
+                  "src": "/Users/mac/projects/paigs-wildid/postman/test-data/not_a_sequence.txt"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create run - rejects empty sample_id",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs"
+              ]
+            },
+            "description": "An explicitly blank label is rejected rather than silently falling back to the default.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "forward_read",
+                  "type": "file",
+                  "src": "/Users/mac/projects/paigs-wildid/postman/test-data/3100.ab1"
+                },
+                {
+                  "key": "reverse_read",
+                  "type": "file",
+                  "src": "/Users/mac/projects/paigs-wildid/postman/test-data/3730.ab1"
+                },
+                {
+                  "key": "sample_id",
+                  "type": "text",
+                  "value": ""
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get unknown run",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs/does-not-exist",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "does-not-exist"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get stage output for unknown run",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs/does-not-exist/stages/import",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "does-not-exist",
+                "stages",
+                "import"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Patch unknown run",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/runs/does-not-exist",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "does-not-exist"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sample_id\": \"X\"\n}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Patch run - rejects empty label",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/runs/{{run_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id}}"
+              ]
+            },
+            "description": "Uses the run_id captured earlier -- run 'Create run - forward + reverse reads' first if this 404s instead.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sample_id\": \"\"\n}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

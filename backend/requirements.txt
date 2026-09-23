@@ -1,0 +1,23 @@
+# Web framework
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+
+# Data validation
+pydantic>=2.7
+
+# Database
+sqlalchemy>=2.0
+psycopg2-binary>=2.9   # PostgreSQL driver (SQLite used by default for prototype/tests, no driver needed)
+
+# Bioinformatics (used from Stage 1 onward)
+biopython>=1.83
+numpy>=1.26
+pandas>=2.2
+
+# Reporting (used from Stage 9 onward)
+reportlab>=4.2
+
+# Testing
+pytest>=8.2
+httpx>=0.27   # required by FastAPI's TestClient
