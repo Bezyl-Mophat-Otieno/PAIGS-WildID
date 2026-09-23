@@ -5,11 +5,30 @@ N, absurdly short), not the normal noisy edges every raw Sanger read has.
 The real accept/reject decision happens later, in Stage 7 (Usability Check),
 after trimming/orientation/consensus have had a chance to clean things up.
 
-Threshold values below are sensible starting defaults, pending real domain
-review, per CLAUDE.md's Configuration model -- there is no Configuration
-subsystem yet, so callers (eventually: run orchestration, sourcing an
-analyst's per-run override or the global default from that subsystem) can
-override either threshold as a keyword argument.
+Threshold values below are informed starting defaults, pending real domain
+review, per CLAUDE.md's Configuration model ("Rules to configure (with
+domain experts, not guessed)"). There is no Configuration subsystem yet
+(its config table + GET/PUT /config endpoints are tied to Run/Stage
+orchestration, build-order step 9), so callers can override either
+threshold as a keyword argument today, and will source it from that
+subsystem's global default or a per-run override once it exists.
+
+Sourcing for the specific numbers below -- and for Stage 4/7/10's, ahead of
+building those stages -- is written up in full, with citations, in the
+PAIGS project doc `claude/configuration-defaults.md`. Short version: this
+particular check (raw, *pre-trim* signal/length) has no external industry
+standard to cite -- it is unique to this pipeline's two-tier QC design
+(coarse pre-trim floor here, the real literature-grounded gate at Stage 7)
+-- so these two values are reasoned defaults, not sourced ones:
+- max_n_proportion=0.5: CLAUDE.md's own framing is "not almost entirely N";
+  0.5 is a literal reading of that ("almost entirely" implies well above
+  half), lenient enough that ordinary noisy-edge N's from ends that haven't
+  been trimmed yet never trip it.
+- min_raw_length=50: an "absurdly-low floor" per CLAUDE.md -- our own real
+  fixtures run 795-1165bp raw, and a good Sanger read is typically
+  hundreds of bp, so 50bp is well below anything Stage 4's trimming could
+  turn into a usable window; it exists only to catch reads that are
+  structurally valid AB1 (passed Stage 1) but essentially content-free.
 """
 from typing import Dict
 
@@ -18,9 +37,10 @@ import numpy as np
 from app.schemas.ab1_extraction import ReadExtraction
 from app.schemas.sanity_check import SanityCheckResult
 
-# Pending real domain review (CLAUDE.md, Configuration model).
+# Informed defaults, pending real domain review -- see module docstring and
+# claude/configuration-defaults.md for sourcing.
 DEFAULT_MAX_N_PROPORTION = 0.5
-DEFAULT_MIN_RAW_LENGTH = 20
+DEFAULT_MIN_RAW_LENGTH = 50
 
 
 def check_sanity(

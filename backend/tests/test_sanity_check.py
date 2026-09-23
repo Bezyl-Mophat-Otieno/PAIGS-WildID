@@ -96,8 +96,10 @@ class TestCheckSanity:
         assert result.status == "FAIL"
 
     def test_passes_at_exactly_the_n_proportion_threshold(self):
-        # 5 of 20 bases are N -> exactly 0.25; threshold is inclusive.
-        sequence = "N" * 5 + "A" * 15
+        # 15 of 60 bases are N -> exactly 0.25; threshold is inclusive.
+        # (Length kept >= the default min_raw_length so only the
+        # N-proportion boundary is under test here.)
+        sequence = "N" * 15 + "A" * 45
         extraction = _extraction(sequence)
 
         result = check_sanity(extraction, max_n_proportion=0.25)
@@ -116,7 +118,7 @@ class TestCheckSanity:
         # A read that would PASS under lenient defaults must FAIL once a
         # stricter, run-specific override is supplied -- mirrors CLAUDE.md's
         # "analyst can override defaults for a run" capability.
-        extraction = _extraction("N" * 2 + "ATGC" * 10)  # 2/42 ~= 0.048 N
+        extraction = _extraction("N" * 2 + "ATGC" * 12)  # 2/50 = 0.04 N, length clears the default floor
 
         lenient = check_sanity(extraction, max_n_proportion=0.5)
         strict = check_sanity(extraction, max_n_proportion=0.01)
