@@ -23,8 +23,10 @@ from app.models.reference import ReferenceDatabaseVersion, ReferenceEntry
 from app.pipeline.blast import search_blast
 from app.reference.publish import (
     InvalidReferenceFastaError,
+    NoActiveReferenceDatabaseError,
     get_active_version,
     publish_reference_db,
+    search_active_reference_database,
 )
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -237,3 +239,55 @@ class TestRealIntegration:
         assert search_result.hits[0].accession == "SYNTH001"
         assert search_result.hits[0].identity == pytest.approx(100.0)
         assert search_result.database_version == "v1"
+
+
+class TestSearchActiveReferenceDatabase:
+    """
+    The other half of the Stage 8 -> Stage 9 handoff named in
+    claude/stage-8-9-status.md's Known follow-ups: nothing called
+    get_active_version() and threaded its db_prefix/version into
+    search_blast(). This is that missing glue -- the FASTA-file half
+    lives in app.pipeline.fasta.write_fasta_file(), tested separately in
+    tests/test_fasta.py.
+    """
+
+    def test_raises_when_nothing_has_been_published_yet(self, tmp_path, db_session):
+        query = FIXTURES_DIR / "synthetic_blast_query_exact_match.fasta"
+
+        with pytest.raises(NoActiveReferenceDatabaseError):
+            search_active_reference_database(query, db_session)
+
+    def test_searches_against_the_active_version(self, tmp_path, db_session):
+        fasta = _write_fasta(tmp_path, "reference_v1.fasta", SYNTHETIC_FASTA)
+        publish_reference_db(
+            fasta, "v1", db=db_session, reference_data_root=tmp_path / "reference_data"
+        )
+        query = FIXTURES_DIR / "synthetic_blast_query_exact_match.fasta"
+
+        result = search_active_reference_database(query, db_session)
+
+        assert result.database_version == "v1"
+        assert result.hits[0].accession == "SYNTH001"
+        assert result.hits[0].identity == pytest.approx(100.0)
+
+    def test_uses_whichever_version_is_currently_active(self, tmp_path, db_session):
+        root = tmp_path / "reference_data"
+        fasta = _write_fasta(tmp_path, "reference_v1.fasta", SYNTHETIC_FASTA)
+        publish_reference_db(fasta, "v1", db=db_session, reference_data_root=root)
+        publish_reference_db(fasta, "v2", db=db_session, reference_data_root=root)
+        query = FIXTURES_DIR / "synthetic_blast_query_exact_match.fasta"
+
+        result = search_active_reference_database(query, db_session)
+
+        assert result.database_version == "v2"
+
+    def test_respects_max_hits(self, tmp_path, db_session):
+        fasta = _write_fasta(tmp_path, "reference_v1.fasta", SYNTHETIC_FASTA)
+        publish_reference_db(
+            fasta, "v1", db=db_session, reference_data_root=tmp_path / "reference_data"
+        )
+        query = FIXTURES_DIR / "synthetic_blast_query_exact_match.fasta"
+
+        result = search_active_reference_database(query, db_session, max_hits=1)
+
+        assert len(result.hits) <= 1

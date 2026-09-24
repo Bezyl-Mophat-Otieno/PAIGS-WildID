@@ -39,7 +39,8 @@ from Bio.SeqRecord import SeqRecord
 from sqlalchemy.orm import Session
 
 from app.models.reference import ReferenceDatabaseVersion, ReferenceEntry
-from app.pipeline.blast import build_reference_database
+from app.pipeline.blast import DEFAULT_MAX_HITS, build_reference_database, search_blast
+from app.schemas.blast import BlastSearchResult
 from app.schemas.reference import PublishResult
 
 REFERENCE_DATA_ROOT = Path(
@@ -52,6 +53,10 @@ REFERENCE_DATA_ROOT = Path(
 
 class InvalidReferenceFastaError(ValueError):
     """Raised when the given FASTA doesn't parse, or parses to zero usable records."""
+
+
+class NoActiveReferenceDatabaseError(RuntimeError):
+    """Raised when a search is requested but no reference database has ever been published."""
 
 
 def _validate_fasta(fasta_path: Path) -> List[SeqRecord]:
@@ -190,3 +195,34 @@ def get_active_version(db: Session) -> Optional[ReferenceDatabaseVersion]:
     built now since it's the natural, one-line counterpart to publishing.
     """
     return db.query(ReferenceDatabaseVersion).filter_by(is_active=True).one_or_none()
+
+
+def search_active_reference_database(
+    query_fasta: Path,
+    db: Session,
+    *,
+    max_hits: int = DEFAULT_MAX_HITS,
+) -> BlastSearchResult:
+    """
+    The other half of the Stage 8 -> Stage 9 handoff named in
+    claude/stage-8-9-status.md's Known follow-ups: look up whichever
+    reference database version is currently active and search
+    `query_fasta` against it, via Stage 9's own search_blast() --
+    unchanged, exactly as that doc's reference-DB design predicted it
+    would need to be. `query_fasta` should already be a real file on
+    disk -- see app.pipeline.fasta.write_fasta_file() for the other
+    half of the handoff, turning Stage 8's in-memory FASTA into one.
+    """
+    active = get_active_version(db)
+    if active is None:
+        raise NoActiveReferenceDatabaseError(
+            "No reference database has been published yet -- nothing to search "
+            "against. Publish one first via POST /reference-database/publish or "
+            "scripts/publish_reference_db.py."
+        )
+    return search_blast(
+        query_fasta,
+        Path(active.db_prefix),
+        database_version=active.version,
+        max_hits=max_hits,
+    )

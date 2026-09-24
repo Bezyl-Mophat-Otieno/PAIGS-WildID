@@ -11,6 +11,7 @@ Tool: Biopython's Bio.SeqIO, used here for writing (it's been used for
 reading since Stage 1/2's AB1 extraction).
 """
 import io
+from pathlib import Path
 
 from Bio.Seq import Seq
 from Bio.SeqIO import write as seqio_write
@@ -32,3 +33,24 @@ def generate_fasta(sample_id: str, sequence: str) -> FastaResult:
         sequence_length=len(sequence),
         fasta_content=buffer.getvalue(),
     )
+
+
+def write_fasta_file(fasta_result: FastaResult, dest_path: Path) -> Path:
+    """
+    Materialize generate_fasta()'s in-memory content to a real file --
+    the Stage 8 -> Stage 9 handoff named in
+    claude/stage-8-9-status.md's Known follow-ups. Stage 9's
+    search_blast() needs a file path, not a Python string (blastn is a
+    subprocess, it reads files), so this is what a future orchestration
+    layer will call between the two stages.
+
+    Deliberately storage-location-agnostic, matching every other
+    pipeline module (none of them import app.storage or know about
+    Run ids) -- the caller decides where the file lives. For a real Run,
+    that will be alongside its other files, e.g.
+    app.storage.run_dir(run_id) / "query.fasta".
+    """
+    dest_path = Path(dest_path)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    dest_path.write_text(fasta_result.fasta_content)
+    return dest_path
