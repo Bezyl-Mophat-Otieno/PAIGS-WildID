@@ -1,5 +1,7 @@
 from fastapi import FastAPI
 
+from app.api.admin import router as admin_router
+from app.api.auth import router as auth_router
 from app.api.config import router as config_router
 from app.api.reference import router as reference_router
 from app.api.runs import router as runs_router
@@ -12,6 +14,8 @@ app = FastAPI(title="PAIGS WildID", version="0.1.0")
 app.include_router(runs_router)
 app.include_router(reference_router)
 app.include_router(config_router)
+app.include_router(auth_router)
+app.include_router(admin_router)
 
 
 @app.get("/health")

@@ -18,6 +18,13 @@ pandas>=2.2
 # Reporting (used from Stage 11: PDF report generation)
 reportlab>=4.2
 
+# Authentication (invite-only accounts, a seeded default admin, JWT
+# bearer tokens for API access -- see app/auth/)
+bcrypt>=4.1     # password hashing; used directly rather than through passlib,
+                # since this app only ever hashes with one algorithm
+pyjwt>=2.8      # access tokens -- the smaller of the two usual FastAPI choices
+                # (vs. python-jose), nothing here needs its extra crypto backends
+
 # Testing
 pytest>=8.2
 httpx>=0.27   # required by FastAPI's TestClient

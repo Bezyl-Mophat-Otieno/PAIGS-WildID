@@ -1657,6 +1657,529 @@
           ]
         }
       ]
+    },
+    {
+      "name": "Authentication & Admin",
+      "item": [
+        {
+          "name": "Admin login (seeded default account)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "The default admin account is seeded automatically on first login attempt (app.auth.service.ensure_default_admin) -- no setup step needed. Credentials come from PAIGS_ADMIN_EMAIL/PAIGS_ADMIN_PASSWORD, falling back to the documented prototype defaults below if unset. Uses OAuth2's standard username/password form fields (not JSON) -- the same shape Swagger UI's \"Authorize\" button submits. Captures admin_token for every admin-only request below.",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "username",
+                  "value": "{{admin_email}}",
+                  "type": "text"
+                },
+                {
+                  "key": "password",
+                  "value": "{{admin_password}}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('role is admin', () => pm.expect(body.role).to.eql('admin'));",
+                  "pm.test('token_type is bearer', () => pm.expect(body.token_type).to.eql('bearer'));",
+                  "pm.environment.set('admin_token', body.access_token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/me as admin",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            },
+            "description": "Confirms the bearer token actually identifies the caller -- every authenticated endpoint in the API accepts this same header."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('is the admin account', () => pm.expect(body.role).to.eql('admin'));",
+                  "pm.test('never exposes the password hash', () => pm.expect(body.hashed_password).to.be.undefined);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Admin invites an analyst",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/invite",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "invite"
+              ]
+            },
+            "description": "The admin's only account-management feature for now, per the product decision: create an invited user and hand back a one-time temporary password. Email delivery is deliberately stubbed (app.auth.email_stub) -- delivered is always false, and the admin is expected to copy temporary_password from this response and share it with the invited user directly, exactly like a real admin would.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{invited_analyst_email}}\",\n  \"role\": \"analyst\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('role is analyst', () => pm.expect(body.user.role).to.eql('analyst'));",
+                  "pm.test('temporary_password is present', () => pm.expect(body.temporary_password).to.be.a('string').and.not.empty);",
+                  "pm.test('email delivery is stubbed, not actually sent', () => pm.expect(body.email.delivered).to.eql(false));",
+                  "pm.environment.set('analyst_temp_password', body.temporary_password);",
+                  "pm.environment.set('invited_user_id', body.user.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Analyst logs in with the copied credentials",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Proves the credentials the admin copied out of the invite response above actually work -- exactly the flow the invited user follows after the admin shares them out-of-band.",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "username",
+                  "value": "{{invited_analyst_email}}",
+                  "type": "text"
+                },
+                {
+                  "key": "password",
+                  "value": "{{analyst_temp_password}}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('role is analyst', () => pm.expect(body.role).to.eql('analyst'));",
+                  "pm.environment.set('analyst_token', body.access_token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List users (admin)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/users",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "users"
+              ]
+            },
+            "description": "Lets the admin see every account that exists -- the seeded default admin plus everyone invited so far -- without ever exposing a password or hash."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('includes the invited analyst', () => {",
+                  "  const emails = body.map(u => u.email);",
+                  "  pm.expect(emails).to.include(pm.environment.get('invited_analyst_email'));",
+                  "});",
+                  "pm.test('no row exposes a password field', () => {",
+                  "  body.forEach(u => {",
+                  "    pm.expect(u.hashed_password).to.be.undefined;",
+                  "    pm.expect(u.password).to.be.undefined;",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login - wrong password returns 401",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "username",
+                  "value": "{{admin_email}}",
+                  "type": "text"
+                },
+                {
+                  "key": "password",
+                  "value": "definitely-not-the-password",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login - unknown email returns 401",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Same 401 as a wrong password (not 404) -- a login attempt can't be used to enumerate which emails have accounts.",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "username",
+                  "value": "nobody@example.com",
+                  "type": "text"
+                },
+                {
+                  "key": "password",
+                  "value": "whatever",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/me without a token returns 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Admin invite - duplicate email returns 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/invite",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "invite"
+              ]
+            },
+            "description": "Re-invites the same analyst created above.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{invited_analyst_email}}\",\n  \"role\": \"analyst\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 409', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Admin invite - malformed email returns 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{admin_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/invite",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "invite"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"not-an-email\",\n  \"role\": \"analyst\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Admin invite - an analyst cannot invite (403)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{analyst_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/invite",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "invite"
+              ]
+            },
+            "description": "Role enforcement: the analyst token from above carries role=analyst, so this admin-only endpoint refuses it.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"should-not-be-created@example.com\",\n  \"role\": \"analyst\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List users - an analyst cannot list users (403)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{analyst_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/users",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "users"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
