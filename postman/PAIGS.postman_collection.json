@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "983d9021-a163-44bb-ac1e-761e869bb0a6",
     "name": "PAIGS WildID -- API",
-    "description": "Manual test collection for the PAIGS WildID backend.\n\nUpdated 2026-09-24: added the 'End-to-end (Orchestration)' folder covering POST /runs/{id}/execute (build-order item 9) and reference database publishing, so the full Stage 1-11 pipeline can be exercised from Postman, not just Stage 0 import.\n\nSetup:\n1. From backend/, run: uvicorn app.main:app --reload\n2. Import the PAIGS environment (postman/PAIGS.postman_environment.json) alongside this collection and select it.\n3. 'Happy path' and 'Errors' cover Stage 0 (Import) only -- run 'Happy path' top to bottom first, it captures run_id into the environment. 'Errors' can be run independently, except 'Patch run - rejects empty label', which reuses run_id.\n4. 'End-to-end (Orchestration)' exercises the full pipeline via POST /runs/{id}/execute -- run it top to bottom, in its own pass (it publishes a reference database as a side effect, which is process-wide state that would change what later Stage 0/Errors requests see if interleaved with those folders).\n\nTest data lives in postman/test-data/ (copies of backend/tests/fixtures/*.ab1, a plain-text file for exercising the extension-rejection case, and reference.fasta -- a single-entry reference database whose sequence is 3100.ab1's own real trimmed output, extracted from backend/tests/test_api_execute.py, guaranteeing a clean 100%-identity BLAST hit for the end-to-end 'completes' request).",
+    "description": "Manual test collection for the PAIGS WildID backend.\n\nUpdated 2026-09-24: added 'Configuration' (GET/PUT /config) and 'Rerun (Configuration subsystem)' (POST /runs/{id}/rerun, including its auto_execute option) folders, on top of the earlier 'End-to-end (Orchestration)' folder covering POST /runs/{id}/execute.\n\nSetup:\n1. From backend/, run: uvicorn app.main:app --reload\n2. Import the PAIGS environment (postman/PAIGS.postman_environment.json) alongside this collection and select it.\n3. 'Happy path' and 'Errors' cover Stage 0 (Import) only -- run 'Happy path' top to bottom first, it captures run_id into the environment. 'Errors' can be run independently, except 'Patch run - rejects empty label', which reuses run_id.\n4. 'End-to-end (Orchestration)', 'Configuration', and 'Rerun (Configuration subsystem)' each publish their own reference database version and create their own runs -- run each folder top to bottom, in its own pass, rather than interleaving requests across folders (they publish reference databases under different version strings specifically so they don't collide with each other, but a partial/out-of-order run within a folder can still leave its own captured environment variables stale).\n\nTest data lives in postman/test-data/ (copies of backend/tests/fixtures/*.ab1, a plain-text file for exercising the extension-rejection case, and reference.fasta -- a single-entry reference database whose sequence is 3100.ab1's own real trimmed output, extracted from backend/tests/test_api_execute.py, guaranteeing a clean 100%-identity BLAST hit wherever it's published).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -1163,6 +1163,493 @@
                   "pm.test('status is 200', () => pm.response.to.have.status(200));",
                   "pm.test('stage status is skipped', () => {",
                   "  pm.expect(pm.response.json().status).to.eql('skipped');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Configuration",
+      "item": [
+        {
+          "name": "List config thresholds",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "config"
+              ]
+            },
+            "description": "GET /config -- all 13 catalogued thresholds (sanity_check, trim, orientation, usability_check, blast, identification), seeded with their module-level defaults on first call. Captures the id of blast.max_hits's row for the requests below."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('has exactly 13 thresholds', () => pm.expect(body.length).to.eql(13));",
+                  "const maxHits = body.find(row => row.key === 'blast.max_hits');",
+                  "pm.test('blast.max_hits row is present with its default value', () => {",
+                  "  pm.expect(maxHits).to.exist;",
+                  "  pm.expect(maxHits.value).to.eql(10);",
+                  "});",
+                  "pm.environment.set('config_id_max_hits', maxHits.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update a config threshold",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/config/{{config_id_max_hits}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "config",
+                "{{config_id_max_hits}}"
+              ]
+            },
+            "description": "Edits the global default -- every Run executed after this (that doesn't itself override blast.max_hits) will use the new value.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"value\": 5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('value updated', () => pm.expect(pm.response.json().value).to.eql(5));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update config - rejects an out-of-bounds value",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/config/{{config_id_max_hits}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "config",
+                "{{config_id_max_hits}}"
+              ]
+            },
+            "description": "blast.max_hits's bounds are [1, unbounded] -- 0 hits would mean Stage 9 never returns anything to identify against.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"value\": 0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update config - unknown id returns 404",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/config/does-not-exist",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "config",
+                "does-not-exist"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"value\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Rerun (Configuration subsystem)",
+      "item": [
+        {
+          "name": "Publish reference database (for rerun demo)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/reference-database/publish",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "reference-database",
+                "publish"
+              ]
+            },
+            "description": "Its own version string (v1-rerun) so this folder can run independently of 'End-to-end (Orchestration)' without a duplicate-version conflict.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "fasta",
+                  "type": "file",
+                  "src": "/Users/mac/projects/paigs-wildid/postman/test-data/reference.fasta"
+                },
+                {
+                  "key": "version",
+                  "type": "text",
+                  "value": "v1-rerun"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create run - single file (rerun source)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs"
+              ]
+            },
+            "description": "The run every request below will rerun from.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "forward_read",
+                  "type": "file",
+                  "src": "/Users/mac/projects/paigs-wildid/postman/test-data/3100.ab1"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.environment.set('run_id_rerun_source', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Execute the source run - completes under default config",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs/{{run_id_rerun_source}}/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id_rerun_source}}",
+                "execute"
+              ]
+            },
+            "description": "Establishes the baseline this folder's reruns will be compared against: default thresholds, same real AB1 file, completes to a PASS report."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('completed to report', () => {",
+                  "  pm.expect(body.status).to.eql('completed');",
+                  "  pm.expect(body.current_stage).to.eql('report');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rerun - create only, tightened config (auto_execute omitted)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/runs/{{run_id_rerun_source}}/rerun",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id_rerun_source}}",
+                "rerun"
+              ]
+            },
+            "description": "Default auto_execute=false -- CLAUDE.md's own two-step shape (same as a fresh upload): this only creates the new Run, reusing the source run's file byte-for-byte, with a usability_check.min_length override tight enough (700bp) to fail the read's real 667bp trimmed length -- but it hasn't run yet.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config_overrides\": {\n    \"usability_check.min_length\": 700\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('created, not yet executed', () => {",
+                  "  pm.expect(body.status).to.eql('in_progress');",
+                  "  pm.expect(body.current_stage).to.eql('import');",
+                  "});",
+                  "pm.test('lineage recorded back to the source run', () => {",
+                  "  pm.expect(body.rerun_of).to.eql(pm.environment.get('run_id_rerun_source'));",
+                  "});",
+                  "pm.test('config_overrides stored on the new run', () => {",
+                  "  pm.expect(body.config_overrides).to.eql({'usability_check.min_length': 700});",
+                  "});",
+                  "pm.environment.set('run_id_rerun_manual', body.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Execute the manual rerun - fails at usability_check",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs/{{run_id_rerun_manual}}/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id_rerun_manual}}",
+                "execute"
+              ]
+            },
+            "description": "The separate second call the manual (non-auto_execute) rerun above needs -- same real file as the source run's own successful execution, but the tightened override now fails it."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('failed at usability_check', () => {",
+                  "  pm.expect(body.status).to.eql('failed');",
+                  "  pm.expect(body.current_stage).to.eql('usability_check');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rerun - auto_execute in a single call",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/runs/{{run_id_rerun_source}}/rerun",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id_rerun_source}}",
+                "rerun"
+              ]
+            },
+            "description": "Same tightened override as above, but with auto_execute:true -- creates AND runs the new Run in this one request. Compare this response directly against the previous two requests combined: identical outcome, one call instead of two.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config_overrides\": {\n    \"usability_check.min_length\": 700\n  },\n  \"auto_execute\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('already executed within this single call', () => {",
+                  "  pm.expect(body.status).to.eql('failed');",
+                  "  pm.expect(body.current_stage).to.eql('usability_check');",
+                  "});",
+                  "pm.test('stages are included directly in the response', () => {",
+                  "  const stageTypes = body.stages.map(s => s.stage_type);",
+                  "  pm.expect(stageTypes).to.include('usability_check');",
+                  "  pm.expect(stageTypes).to.not.include('fasta');",
+                  "});",
+                  "pm.test('lineage recorded back to the source run', () => {",
+                  "  pm.expect(body.rerun_of).to.eql(pm.environment.get('run_id_rerun_source'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get the source run - confirm it was never touched by either rerun",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs/{{run_id_rerun_source}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id_rerun_source}}"
+              ]
+            },
+            "description": "\"The two Runs sit side by side, fully independent and comparable\" (CLAUDE.md) -- the source run's own completed outcome must be exactly what 'Execute the source run' produced, unaffected by anything done to either rerun above."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('still completed at report, untouched', () => {",
+                  "  pm.expect(body.status).to.eql('completed');",
+                  "  pm.expect(body.current_stage).to.eql('report');",
                   "});"
                 ]
               }
