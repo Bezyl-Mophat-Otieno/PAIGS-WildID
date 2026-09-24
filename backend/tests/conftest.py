@@ -25,6 +25,18 @@ def temp_storage_root(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
+def temp_reference_data_root(tmp_path, monkeypatch):
+    """Redirect app.reference.publish's REFERENCE_DATA_ROOT to an isolated
+    per-test directory, same treatment as temp_storage_root above."""
+    from app.reference import publish as reference_publish
+
+    root = tmp_path / "reference_data"
+    root.mkdir()
+    monkeypatch.setattr(reference_publish, "REFERENCE_DATA_ROOT", root)
+    return root
+
+
+@pytest.fixture()
 def client(tmp_path, temp_storage_root):
     """A TestClient wired to an isolated, per-test SQLite database and storage dir."""
     db_path = tmp_path / "test.db"
