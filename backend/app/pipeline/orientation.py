@@ -30,11 +30,16 @@ the "usable overlap" bar, the run flags for review rather than guessing
 Tool: Biopython's Bio.Align.PairwiseAligner (local mode) -- sufficient for
 short Sanger reads, per CLAUDE.md's own tooling note.
 
-The "usable overlap" bar (min_overlap_length, min_identity) is a pipeline
-mechanic, not one of the four threshold sets CLAUDE.md's Configuration
-model section actually names (Stage 3/4/7/10) -- so these are reasoned
-defaults, kept as keyword overrides for flexibility, not something
-sourced from claude/configuration-defaults.md.
+The "usable overlap" bar (min_overlap_length, min_identity) isn't one of
+the four threshold sets CLAUDE.md's Configuration model section names by
+stage (3/4/7/10), and Stage 5's own section has no "Rules to configure"
+callout the way those four do -- it reads more like an algorithm-tuning
+parameter (did the alignment find a real signal) than a biological QC
+judgment call. Kept as keyword overrides regardless, and -- at the user's
+request, so a lab can tune this too if a marker or read length needs a
+different bar -- now documented and sourced (reasoned, no external
+citation applies) in claude/configuration-defaults.md alongside the
+others.
 """
 from typing import List, Tuple
 
