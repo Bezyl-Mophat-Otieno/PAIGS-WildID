@@ -51,3 +51,26 @@ def client(tmp_path, temp_storage_root):
 @pytest.fixture()
 def fixtures_dir():
     return BACKEND_ROOT / "tests" / "fixtures"
+
+
+@pytest.fixture()
+def db_session(tmp_path):
+    """
+    A raw SQLAlchemy session against an isolated per-test SQLite database,
+    for tests that touch models directly (e.g. Reference Database Setup's
+    publish_reference_db) rather than through the HTTP API, which is what
+    the `client` fixture above is for.
+    """
+    db_path = tmp_path / "test_reference.db"
+    engine = create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine)
+
+    session = TestingSessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+        engine.dispose()

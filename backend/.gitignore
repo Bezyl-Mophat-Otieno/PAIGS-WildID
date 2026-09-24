@@ -4,3 +4,4 @@ __pycache__/
 storage/
 *.db
 .pytest_cache/
+reference_data/
