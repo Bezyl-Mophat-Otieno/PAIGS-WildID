@@ -199,3 +199,67 @@ class TestExecuteRun:
             "identification",
             "report",
         }
+
+
+class TestExecuteRunWithConfigOverrides:
+    """Proves POST /runs' config_overrides actually changes what
+    POST /runs/{id}/execute does -- not just that the override is
+    accepted and stored (see test_api_runs.py's
+    TestCreateRunWithConfigOverrides for that). Same real AB1 file,
+    same published reference database as
+    test_single_file_runs_the_full_pipeline_to_a_completed_report above
+    (which proves the *default*-config version of this exact input
+    completes to a PASS report) -- here, a per-run override alone is
+    enough to stop it at usability_check instead.
+    """
+
+    def test_overriding_min_length_turns_a_would_be_pass_into_a_fail(
+        self, client, fixtures_dir, temp_reference_data_root
+    ):
+        # Same trimmed_3100 sequence used above -- 667bp, so a
+        # usability_check.min_length override of 700 is guaranteed to
+        # fail it, where the 500bp default would not.
+        trimmed_3100 = (
+            "AGCGATTCCAGCTTCATATAGTCGAGTTGCAGACTACAATCCGAACTGAGAACAACTTTATGGGATTTGCT"
+            "TGACCTCGCGGTTTCGCTGCCCTTTGTATTGTCCATTGTAGCACGTGTGTAGCCCAAATCATAAGGGGCAT"
+            "GATGATTTGACGTCATCCCCACCTTCCTCCGGTTTGTCACCGGCAGTCAACTTAGAGTGCCCAACTTAAT"
+            "GATGGCAACTAAGCTTAAGGGTTGCGCTCGTTGCGGGACTTAACCCAACATCTCACGACACGAGCTGAC"
+            "GACAACCATGCACCACCTGTCACTCTGTCCCCCGAAGGGGAAAACTCTATCTCTAGAGGAGTCAGAGGA"
+            "TGTCAAGATTTGGTAAGGTTCTTCGCGTTGCTTCGAATTAAACCACATGCTCCACCGCTTGTGCGGGTC"
+            "CCCGTCAATTCCTTTGAGTTTCAACCTTGCGGTCGTACTCCCCAGGCGGAGTGCTTAATGCGTTAGCTG"
+            "CAGCACTAAGGGGCGGAAACCCCCTAACACTTAGCACTCATCGTTTACGGCGTGGACTACCAGGGTATC"
+            "TAATCCTGTTTGATCCCCACGCTTTCGCACATCAGCGTCAGTTACAGACCAGAAAGTCGCCTTCGCCAC"
+            "TGGTGTTCCTCCATATCTCTGCGCATTTCACCGCTACACAT"
+        )
+        fasta_bytes = f">REF3100 Testus fixturensis\n{trimmed_3100}\n".encode()
+        publish_resp = client.post(
+            "/reference-database/publish",
+            files={"fasta": ("reference.fasta", io.BytesIO(fasta_bytes), "text/plain")},
+            data={"version": "v1"},
+        )
+        assert publish_resp.status_code == 201, publish_resp.text
+
+        create_resp = client.post(
+            "/runs",
+            files={"forward_read": _file_field(fixtures_dir, "3100.ab1")},
+            data={"config_overrides": '{"usability_check.min_length": 700}'},
+        )
+        run_id = create_resp.json()["id"]
+        assert create_resp.json()["config_overrides"] == {"usability_check.min_length": 700}
+
+        resp = client.post(f"/runs/{run_id}/execute")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "failed"
+        assert body["current_stage"] == "usability_check"
+
+        usability_stage = client.get(f"/runs/{run_id}/stages/usability_check").json()
+        assert usability_stage["output"]["status"] == "FAIL"
+        assert usability_stage["stage_metadata"]["thresholds"]["min_length"] == 700
+
+        # blast/identification/report never ran
+        run_detail = client.get(f"/runs/{run_id}").json()
+        stage_types = {s["stage_type"] for s in run_detail["stages"]}
+        assert "blast" not in stage_types
+        assert "report" not in stage_types

@@ -405,3 +405,116 @@ class TestContinueRunFromExtractionBranching:
         }
         assert "identification" not in stage_types
         assert "report" not in stage_types
+
+
+class TestContinueRunFromExtractionWithConfigOverrides:
+    """Proves the Configuration subsystem is actually wired into
+    orchestration, not just built alongside it: passing a non-default
+    `effective_thresholds` dict changes both what gets recorded in a
+    Stage's metadata and the run-level outcome, using the exact same
+    input data a default-config run would otherwise pass.
+    """
+
+    def test_custom_thresholds_are_used_and_recorded_in_stage_metadata(
+        self, db_session, tmp_path
+    ):
+        from app.configuration import service as config_service
+        from app.orchestration.execute import continue_run_from_extraction
+
+        good_seq = "".join(["ATCG"[i % 4] for i in range(700)])
+        good = ReadExtraction(raw_sequence=good_seq, raw_length=700, quality_scores=[40] * 700)
+        extractions = {"forward": good}
+        format_check = _format_check(["forward"])
+        run = _make_run(db_session, original_filenames=["forward.ab1"])
+
+        effective = config_service.effective_thresholds(
+            db_session, {"sanity_check.min_raw_length": 10}
+        )
+
+        continue_run_from_extraction(
+            run, format_check, extractions, db_session, tmp_path / "run_storage", effective
+        )
+
+        from app.models.stage import Stage
+
+        sanity_stage = (
+            db_session.query(Stage)
+            .filter(Stage.run_id == run.id, Stage.stage_type == "sanity_check")
+            .one()
+        )
+        assert sanity_stage.stage_metadata["thresholds"]["min_raw_length"] == 10
+        assert isinstance(sanity_stage.stage_metadata["thresholds"]["min_raw_length"], int)
+
+    def test_overriding_usability_min_length_turns_a_would_be_pass_into_a_fail(
+        self, db_session, temp_reference_data_root, tmp_path
+    ):
+        """The exact same 700bp single read that
+        test_single_file_provided_reason_recorded_on_full_success (above)
+        proves completes the full pipeline under default config -- here,
+        overriding usability_check.min_length above 700 stops it at
+        usability_check instead. Same input, different (worse) outcome,
+        purely from a per-run config override.
+        """
+        from app.configuration import service as config_service
+        from app.orchestration.execute import continue_run_from_extraction
+
+        good_seq = "".join(["ATCG"[i % 4] for i in range(700)])
+        good = ReadExtraction(raw_sequence=good_seq, raw_length=700, quality_scores=[40] * 700)
+        extractions = {"forward": good}
+        format_check = _format_check(["forward"])
+        run = _make_run(db_session, original_filenames=["forward.ab1"])
+        _publish_matching_reference(db_session, temp_reference_data_root, tmp_path, good_seq)
+
+        effective = config_service.effective_thresholds(
+            db_session, {"usability_check.min_length": 800}
+        )
+
+        result = continue_run_from_extraction(
+            run, format_check, extractions, db_session, tmp_path / "run_storage", effective
+        )
+
+        assert result.status == "failed"
+        assert result.current_stage == "usability_check"
+
+        from app.models.stage import Stage
+
+        usability_stage = (
+            db_session.query(Stage)
+            .filter(Stage.run_id == run.id, Stage.stage_type == "usability_check")
+            .one()
+        )
+        assert usability_stage.output["status"] == "FAIL"
+        assert usability_stage.stage_metadata["thresholds"]["min_length"] == 800
+
+    def test_no_explicit_effective_thresholds_falls_back_to_global_config(
+        self, db_session, tmp_path
+    ):
+        """When called without the 6th argument (every pre-existing test
+        in this file does exactly that), behavior must be unchanged --
+        the function computes effective thresholds itself from the
+        (freshly-seeded, all-defaults) global config table."""
+        from app.orchestration.execute import continue_run_from_extraction
+
+        bad = ReadExtraction(raw_sequence="N" * 10, raw_length=10, quality_scores=[0] * 10)
+        extractions = {"forward": bad, "reverse": bad}
+        format_check = _format_check(["forward", "reverse"])
+        run = _make_run(db_session)
+
+        result = continue_run_from_extraction(
+            run, format_check, extractions, db_session, tmp_path / "run_storage"
+        )
+
+        assert result.status == "failed"
+        assert result.current_stage == "sanity_check"
+
+        from app.models.stage import Stage
+
+        sanity_stage = (
+            db_session.query(Stage)
+            .filter(Stage.run_id == run.id, Stage.stage_type == "sanity_check")
+            .one()
+        )
+        # DEFAULT_MIN_RAW_LENGTH -- confirms the fallback path used the
+        # real global config (seeded with catalog defaults), not some
+        # empty/zeroed-out dict.
+        assert sanity_stage.stage_metadata["thresholds"]["min_raw_length"] == 50

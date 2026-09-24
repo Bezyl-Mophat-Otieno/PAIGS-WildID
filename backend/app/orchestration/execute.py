@@ -16,13 +16,13 @@ Two layers, split deliberately at the Stage 2/3 seam:
   from Stage 0's output, runs Stage 1 (format check) and Stage 2
   (extraction) against them for real, then hands off.
 - continue_run_from_extraction(run, format_check, extractions, db,
-  run_dir): everything from Stage 3 onward. Exposed as its own
-  function (not a private helper) specifically so it's testable with
-  hand-built ReadExtraction data -- Biopython's AbiIO module can only
-  *read* the AB1 binary format, not write it, so there is no way to
-  construct a genuine two-read AB1 pair with a real, known overlap for
-  a from-scratch-upload test. See tests/test_orchestration.py's own
-  docstring.
+  run_dir, effective_thresholds=None): everything from Stage 3 onward.
+  Exposed as its own function (not a private helper) specifically so
+  it's testable with hand-built ReadExtraction data -- Biopython's AbiIO
+  module can only *read* the AB1 binary format, not write it, so there
+  is no way to construct a genuine two-read AB1 pair with a real, known
+  overlap for a from-scratch-upload test. See tests/test_orchestration.py's
+  own docstring.
 
 Stage.status vs. Run.status: a Stage's own status reflects whether
 *running that pipeline step* succeeded technically -- "completed" even
@@ -47,13 +47,18 @@ search against a small MVP-sized reference database), but worth
 revisiting if a real reference database or a very slow BLAST search ever
 makes a single /execute call block for a long time.
 
-Thresholds: every stage function's own module-level defaults are used --
-there is no Configuration subsystem yet (GET/PUT /config, per-run
-overrides) for this to pull from, consistent with every stage's own "not
-yet wired to config" flag. The values actually used are recorded in each
-Stage's stage_metadata and, via Stage 11's ReportInput.thresholds_used,
-in the final report -- so this is visible in the audit trail rather than
-silently baked in, even though it isn't yet configurable.
+Thresholds: resolved through the Configuration subsystem
+(app.configuration.service.effective_thresholds), not hardcoded module
+defaults -- the global config table's current values (GET/PUT /config),
+with this Run's own config_overrides (set at POST /runs or POST
+/runs/{id}/rerun time) layered on top. Each stage's actual effective
+kwargs are recorded in its own Stage.stage_metadata["thresholds"] (audit
+trail), and the stages whose own result schema doesn't already carry
+them (sanity_check, usability_check, orientation, blast) are additionally
+folded into the final report's ReportInput.thresholds_used -- trim's
+TrimResult.trim_params and identification's IdentificationResult.
+thresholds_applied already carry their own, so they aren't duplicated
+there.
 """
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,6 +67,7 @@ from typing import Dict, Optional
 from sqlalchemy.orm import Session
 
 from app import storage
+from app.configuration import service as config_service
 from app.models.run import Run
 from app.models.stage import Stage
 from app.pipeline.ab1_extraction import ReadExtraction, extract_reads_for_files
@@ -69,26 +75,11 @@ from app.pipeline.consensus import build_consensus
 from app.pipeline.fasta import generate_fasta, write_fasta_file
 from app.pipeline.format_check import check_format_for_files
 from app.pipeline.identification import identify_species_from_blast_result
-from app.pipeline.orientation import (
-    DEFAULT_MIN_IDENTITY,
-    DEFAULT_MIN_OVERLAP_LENGTH,
-    detect_orientation,
-)
+from app.pipeline.orientation import detect_orientation
 from app.pipeline.report import generate_report, write_report_file
-from app.pipeline.sanity_check import (
-    DEFAULT_MAX_N_PROPORTION,
-    DEFAULT_MIN_RAW_LENGTH,
-    check_sanity_for_files,
-)
-from app.pipeline.trim import (
-    DEFAULT_MIN_WINDOW_SIZE,
-    DEFAULT_QUALITY_THRESHOLD,
-    trim_reads_for_files,
-)
+from app.pipeline.sanity_check import check_sanity_for_files
+from app.pipeline.trim import trim_reads_for_files
 from app.pipeline.usability_check import (
-    DEFAULT_MAX_AMBIGUOUS_PROPORTION,
-    DEFAULT_MIN_LENGTH,
-    DEFAULT_MIN_MEAN_QUALITY,
     check_usability_from_consensus,
     check_usability_from_single_read,
 )
@@ -190,6 +181,13 @@ def execute_run(run_id: str, db: Session) -> Run:
 
     file_paths = _resolve_file_paths(run, import_stage)
 
+    # Global config, with this Run's own per-run overrides (if any --
+    # set at POST /runs or POST /runs/{id}/rerun time) layered on top.
+    # Resolved once, up front, and threaded through so every stage below
+    # sees the exact same snapshot even if GET/PUT /config is edited
+    # concurrently while this run is executing.
+    effective = config_service.effective_thresholds(db, run.config_overrides)
+
     # ---- Stage 1: Format Validity Check (hard stop) ----
     format_check = check_format_for_files(file_paths)
     _persist_stage(
@@ -222,7 +220,7 @@ def execute_run(run_id: str, db: Session) -> Run:
     )
 
     run_dir = storage.run_dir(run.id)
-    return continue_run_from_extraction(run, format_check, extractions, db, run_dir)
+    return continue_run_from_extraction(run, format_check, extractions, db, run_dir, effective)
 
 
 def continue_run_from_extraction(
@@ -231,13 +229,26 @@ def continue_run_from_extraction(
     extractions: Dict[str, ReadExtraction],
     db: Session,
     run_dir,
+    effective_thresholds: Optional[Dict[str, float]] = None,
 ) -> Run:
     """Stage 3 onward. See module docstring for why this is its own,
-    separately-testable entry point."""
+    separately-testable entry point. `effective_thresholds` is the flat
+    {catalog_key: value} dict app.configuration.service.effective_thresholds
+    returns -- when omitted (every direct function-level test that
+    predates the Configuration subsystem does this), it's computed here
+    from the global config table (freshly seeded with catalog defaults on
+    an empty DB) and this Run's own config_overrides, so behavior is
+    unchanged for any caller that doesn't care about configuration."""
     run_dir = Path(run_dir)
+    effective = (
+        effective_thresholds
+        if effective_thresholds is not None
+        else config_service.effective_thresholds(db, run.config_overrides)
+    )
 
     # ---- Stage 3: Coarse Sanity Check ----
-    sanity_results = check_sanity_for_files(extractions)
+    sanity_kwargs = config_service.kwargs_for_stage(effective, "sanity_check")
+    sanity_results = check_sanity_for_files(extractions, **sanity_kwargs)
 
     surviving_slots = [slot for slot, result in sanity_results.items() if result.status == "PASS"]
 
@@ -255,10 +266,7 @@ def continue_run_from_extraction(
         output={slot: result.model_dump() for slot, result in sanity_results.items()},
         metadata={
             "single_read_reason": single_read_reason,
-            "thresholds": {
-                "max_n_proportion": DEFAULT_MAX_N_PROPORTION,
-                "min_raw_length": DEFAULT_MIN_RAW_LENGTH,
-            },
+            "thresholds": sanity_kwargs,
         },
     )
 
@@ -266,20 +274,16 @@ def continue_run_from_extraction(
         return _stop_run(db, run)
 
     # ---- Stage 4: Trimming (surviving slots only) ----
+    trim_kwargs = config_service.kwargs_for_stage(effective, "trim")
     trim_inputs = {slot: extractions[slot] for slot in surviving_slots}
-    trims = trim_reads_for_files(trim_inputs)
+    trims = trim_reads_for_files(trim_inputs, **trim_kwargs)
     _persist_stage(
         db,
         run,
         "trim",
         status="completed",
         output={slot: result.model_dump() for slot, result in trims.items()},
-        metadata={
-            "thresholds": {
-                "quality_threshold": DEFAULT_QUALITY_THRESHOLD,
-                "min_window_size": DEFAULT_MIN_WINDOW_SIZE,
-            }
-        },
+        metadata={"thresholds": trim_kwargs},
     )
 
     trimmed_quality = {
@@ -288,11 +292,16 @@ def continue_run_from_extraction(
     }
 
     orientation_result = None
+    orientation_kwargs = None
     consensus_result = None
+    usability_kwargs = config_service.kwargs_for_stage(effective, "usability_check")
 
     if len(surviving_slots) == 2:
+        orientation_kwargs = config_service.kwargs_for_stage(effective, "orientation")
         orientation_result = detect_orientation(
-            trims["forward"].trimmed_sequence, trims["reverse"].trimmed_sequence
+            trims["forward"].trimmed_sequence,
+            trims["reverse"].trimmed_sequence,
+            **orientation_kwargs,
         )
         _persist_stage(
             db,
@@ -300,12 +309,7 @@ def continue_run_from_extraction(
             "orientation",
             status="completed",
             output=orientation_result.model_dump(),
-            metadata={
-                "thresholds": {
-                    "min_overlap_length": DEFAULT_MIN_OVERLAP_LENGTH,
-                    "min_identity": DEFAULT_MIN_IDENTITY,
-                }
-            },
+            metadata={"thresholds": orientation_kwargs},
         )
 
         if orientation_result.orientation == "no_overlap_found":
@@ -327,28 +331,25 @@ def continue_run_from_extraction(
         _persist_stage(
             db, run, "consensus", status="completed", output=consensus_result.model_dump()
         )
-        usability = check_usability_from_consensus(consensus_result)
+        usability = check_usability_from_consensus(consensus_result, **usability_kwargs)
         sequence_for_fasta = consensus_result.consensus_sequence
     else:
         _persist_stage(db, run, "orientation", status="skipped")
         _persist_stage(db, run, "consensus", status="skipped")
         only_slot = surviving_slots[0]
-        usability = check_usability_from_single_read(trims[only_slot], trimmed_quality[only_slot])
+        usability = check_usability_from_single_read(
+            trims[only_slot], trimmed_quality[only_slot], **usability_kwargs
+        )
         sequence_for_fasta = trims[only_slot].trimmed_sequence
 
     # ---- Stage 7: Usability Check (the real accept/reject gate) ----
-    usability_thresholds = {
-        "min_length": DEFAULT_MIN_LENGTH,
-        "min_mean_quality": DEFAULT_MIN_MEAN_QUALITY,
-        "max_ambiguous_proportion": DEFAULT_MAX_AMBIGUOUS_PROPORTION,
-    }
     _persist_stage(
         db,
         run,
         "usability_check",
         status="completed",
         output=usability.model_dump(),
-        metadata={"thresholds": usability_thresholds},
+        metadata={"thresholds": usability_kwargs},
     )
 
     if usability.status == "FAIL":
@@ -369,33 +370,42 @@ def continue_run_from_extraction(
     _persist_stage(db, run, "fasta", status="completed", output=fasta_result.model_dump())
 
     # ---- Stage 9: BLAST comparison ----
+    blast_kwargs = config_service.kwargs_for_stage(effective, "blast")
     try:
-        blast_result = search_active_reference_database(query_fasta_path, db)
+        blast_result = search_active_reference_database(query_fasta_path, db, **blast_kwargs)
     except NoActiveReferenceDatabaseError as exc:
         _persist_stage(db, run, "blast", status="failed", output={"error": str(exc)})
         return _stop_run(db, run)
 
-    _persist_stage(db, run, "blast", status="completed", output=blast_result.model_dump())
+    _persist_stage(
+        db,
+        run,
+        "blast",
+        status="completed",
+        output=blast_result.model_dump(),
+        metadata={"thresholds": blast_kwargs},
+    )
 
     # ---- Stage 10: Identification engine ----
-    identification_result = identify_species_from_blast_result(blast_result)
+    identification_kwargs = config_service.kwargs_for_stage(effective, "identification")
+    identification_result = identify_species_from_blast_result(
+        blast_result, **identification_kwargs
+    )
     _persist_stage(
         db, run, "identification", status="completed", output=identification_result.model_dump()
     )
 
     # ---- Stage 11: Reporting ----
+    # Only the stages whose own result schema doesn't already carry the
+    # thresholds it used -- TrimResult.trim_params and IdentificationResult.
+    # thresholds_applied already do, so they aren't duplicated here.
     thresholds_used = {
-        "sanity_check": {
-            "max_n_proportion": DEFAULT_MAX_N_PROPORTION,
-            "min_raw_length": DEFAULT_MIN_RAW_LENGTH,
-        },
-        "usability_check": usability_thresholds,
+        "sanity_check": sanity_kwargs,
+        "usability_check": usability_kwargs,
+        "blast": blast_kwargs,
     }
-    if orientation_result is not None:
-        thresholds_used["orientation"] = {
-            "min_overlap_length": DEFAULT_MIN_OVERLAP_LENGTH,
-            "min_identity": DEFAULT_MIN_IDENTITY,
-        }
+    if orientation_kwargs is not None:
+        thresholds_used["orientation"] = orientation_kwargs
 
     report_input = ReportInput(
         run_id=run.id,

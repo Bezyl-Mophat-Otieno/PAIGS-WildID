@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -31,6 +31,13 @@ class RunRead(BaseModel):
     created_at: datetime
     current_stage: str
     status: str
+    # Per-run threshold overrides supplied at POST /runs or POST
+    # /runs/{id}/rerun time -- null when the analyst didn't override
+    # anything (see app.models.run.Run's own docstring).
+    config_overrides: Optional[Dict[str, float]] = None
+    # Set only on a Run created via POST /runs/{id}/rerun -- the
+    # original Run this one reused the file(s) of.
+    rerun_of: Optional[str] = None
 
 
 class RunDetail(RunRead):
@@ -41,3 +48,13 @@ class RunDetail(RunRead):
 
 class RunPatch(BaseModel):
     sample_id: str = Field(..., min_length=1)
+
+
+class RerunRequest(BaseModel):
+    """POST /runs/{id}/rerun's optional JSON body. No files here -- the
+    whole point is reusing the source Run's already-stored file(s)
+    (app.orchestration.rerun.create_rerun); only what's different about
+    the new attempt is supplied."""
+
+    config_overrides: Optional[Dict[str, float]] = None
+    sample_id: Optional[str] = None

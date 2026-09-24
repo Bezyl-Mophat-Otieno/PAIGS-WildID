@@ -41,6 +41,32 @@ def save_uploaded_files(run_id: str, files) -> List[str]:
     return stored_names
 
 
+def copy_run_files(source_run_id: str, dest_run_id: str, filenames: List[str]) -> List[str]:
+    """
+    Copy already-stored files from one run's directory into another's,
+    byte-for-byte -- used by POST /runs/{id}/rerun
+    (app.orchestration.rerun.create_rerun) to reuse a prior run's
+    uploaded AB1 file(s) under the new run's own id, so every Run's
+    storage directory stays self-contained (the same convention
+    save_uploaded_files establishes for a fresh upload) and the analyst
+    can try different configuration without re-uploading anything.
+    Returns the stored filenames actually written in the destination
+    directory, same order as `filenames` -- not necessarily identical to
+    `filenames` if the destination directory somehow already held a file
+    of the same name (see _unique_name).
+    """
+    source_dir = run_dir(source_run_id)
+    target_dir = run_dir(dest_run_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    stored_names = []
+    for filename in filenames:
+        dest_name = _unique_name(target_dir, filename)
+        shutil.copyfile(source_dir / filename, target_dir / dest_name)
+        stored_names.append(dest_name)
+    return stored_names
+
+
 def _unique_name(target_dir: Path, filename: str) -> str:
     """Avoid collisions if both uploads happen to share a filename."""
     candidate = filename

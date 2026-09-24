@@ -264,3 +264,68 @@ class TestPatchRun:
         resp = client.patch(f"/runs/{created['id']}", json={"sample_id": ""})
 
         assert resp.status_code == 422
+
+
+class TestCreateRunWithConfigOverrides:
+    """POST /runs' 'optional config overrides' (CLAUDE.md's API shape) --
+    a JSON object of {catalog key: value}, sent as a form-data text field
+    alongside the file upload(s) since the request is already
+    multipart/form-data. Execution-time effect (does an override actually
+    change the pipeline's outcome) is covered in test_api_execute.py;
+    these tests are about create_run's own validation and storage of it.
+    """
+
+    def test_accepts_and_stores_valid_config_overrides(self, client, fixtures_dir):
+        resp = client.post(
+            "/runs",
+            files={"forward_read": _file_field(fixtures_dir, "3100.ab1")},
+            data={"config_overrides": '{"usability_check.min_length": 300}'},
+        )
+
+        assert resp.status_code == 201
+        assert resp.json()["config_overrides"] == {"usability_check.min_length": 300}
+
+    def test_omitting_config_overrides_leaves_it_null(self, client, fixtures_dir):
+        resp = client.post(
+            "/runs",
+            files={"forward_read": _file_field(fixtures_dir, "3100.ab1")},
+        )
+
+        assert resp.status_code == 201
+        assert resp.json()["config_overrides"] is None
+
+    def test_rejects_invalid_json(self, client, fixtures_dir):
+        resp = client.post(
+            "/runs",
+            files={"forward_read": _file_field(fixtures_dir, "3100.ab1")},
+            data={"config_overrides": "{not valid json"},
+        )
+
+        assert resp.status_code == 422
+
+    def test_rejects_a_json_value_that_is_not_an_object(self, client, fixtures_dir):
+        resp = client.post(
+            "/runs",
+            files={"forward_read": _file_field(fixtures_dir, "3100.ab1")},
+            data={"config_overrides": "[1, 2, 3]"},
+        )
+
+        assert resp.status_code == 422
+
+    def test_rejects_an_unknown_config_key(self, client, fixtures_dir):
+        resp = client.post(
+            "/runs",
+            files={"forward_read": _file_field(fixtures_dir, "3100.ab1")},
+            data={"config_overrides": '{"not_a_real.key": 1}'},
+        )
+
+        assert resp.status_code == 422
+
+    def test_rejects_an_out_of_bounds_value(self, client, fixtures_dir):
+        resp = client.post(
+            "/runs",
+            files={"forward_read": _file_field(fixtures_dir, "3100.ab1")},
+            data={"config_overrides": '{"orientation.min_identity": 2.0}'},
+        )
+
+        assert resp.status_code == 422
