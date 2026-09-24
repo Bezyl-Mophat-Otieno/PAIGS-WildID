@@ -1,0 +1,25 @@
+# Dev-only overrides, automatically layered on top of docker-compose.yml
+# by plain `docker compose up` (Compose loads this file by convention
+# whenever it's present alongside the base file).
+#
+# What this does: bind-mounts your local backend/ source into the
+# container and runs uvicorn with --reload, so code edits on the host
+# take effect immediately -- no `docker compose up --build` needed for
+# day-to-day changes. You only need --build again when requirements.txt
+# changes (new/updated dependencies must still be installed into the image).
+#
+# This file is intentionally excluded from production runs -- deploy with:
+#   docker compose -f docker-compose.yml up --build -d
+# which ignores this file entirely and uses the clean base config
+# (no source bind-mount, no --reload).
+
+services:
+  wildid-backend:
+    volumes:
+      - ./backend:/app
+      # Re-declared here (in addition to the base file) so the named
+      # volume still lands at /app/storage even though /app itself is
+      # now bind-mounted above -- the more specific mount wins for that
+      # path, so uploaded files/run artifacts keep persisting correctly.
+      - wildid-storage:/app/storage
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
