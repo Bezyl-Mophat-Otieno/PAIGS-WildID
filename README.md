@@ -104,6 +104,11 @@ gone out) — so the admin copies `temporary_password` from the response and sha
 with the invited user directly. `GET /admin/users` lists every account (never exposing
 a password) so an admin can confirm who's been invited.
 
-Existing pipeline endpoints (`/runs`, `/config`, `/reference-database`) are **not** yet
-gated behind a login — this first pass adds the accounts/roles/tokens plumbing itself;
-requiring auth on those endpoints is a deliberate next step, not done here.
+Every `/runs` endpoint now requires a bearer token, and Runs are scoped per owner:
+whoever creates or reruns a Run (admin or analyst -- role doesn't matter for this) is
+the only one who can see or act on it, for now -- an admin's own `GET /runs` is
+restricted to their own Runs exactly like an analyst's. Giving admin cross-tenant
+visibility (seeing everyone's runs and analyses) is a deliberate later step, flagged
+but not built. `/config` and `/reference-database` are **not** yet gated behind a
+login -- those are global/admin-domain settings, not per-user data, and were left
+alone in this pass.

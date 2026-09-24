@@ -105,8 +105,8 @@ class TestInviteUser:
 
         assert resp.status_code == 403
 
-    def test_requires_authentication(self, client):
-        resp = client.post("/admin/invite", json={"email": "noauth@example.com", "role": "analyst"})
+    def test_requires_authentication(self, anon_client):
+        resp = anon_client.post("/admin/invite", json={"email": "noauth@example.com", "role": "analyst"})
 
         assert resp.status_code == 401
 

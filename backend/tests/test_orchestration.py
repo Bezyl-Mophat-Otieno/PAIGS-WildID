@@ -49,11 +49,17 @@ def _true_pair(seed: int, length: int, split: int):
 
 
 def _make_run(db_session, sample_id="WILD_TEST", original_filenames=None) -> Run:
+    # owner_id is required on every Run (see app.models.run.Run's own
+    # docstring) but ownership isn't what these tests exercise -- they
+    # call continue_run_from_extraction() directly, bypassing the API
+    # layer (app.api.runs._get_owned_run) that actually enforces it --
+    # so a fixed placeholder id is enough here.
     run = Run(
         sample_id=sample_id,
         original_filenames=original_filenames or ["forward.ab1", "reverse.ab1"],
         current_stage="import",
         status="in_progress",
+        owner_id="test-owner-id",
     )
     db_session.add(run)
     db_session.flush()

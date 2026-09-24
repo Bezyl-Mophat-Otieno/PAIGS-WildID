@@ -8,11 +8,13 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app import storage
+from app.auth.dependencies import get_current_user
 from app.configuration import service as config_service
 from app.configuration.errors import ConfigValueOutOfBoundsError, UnknownConfigKeyError
 from app.db import get_db
 from app.models.run import Run
 from app.models.stage import STAGE_TYPES, Stage
+from app.models.user import User
 from app.naming import default_sample_id
 from app.orchestration.execute import RunAlreadyExecutedError, RunNotFoundError, execute_run
 from app.orchestration.rerun import create_rerun
@@ -58,12 +60,28 @@ def _parse_config_overrides(raw: Optional[str]) -> Optional[dict]:
     return parsed
 
 
+def _get_owned_run(run_id: str, current_user: User, db: Session) -> Run:
+    """Looks up a Run and confirms `current_user` owns it, in one step --
+    used by every endpoint below that acts on a specific run_id. Returns
+    404 (not 403) when the Run exists but belongs to someone else, same
+    as when it doesn't exist at all: a caller shouldn't be able to tell
+    the difference, and shouldn't be able to confirm another user's Run
+    even exists. See app.models.run.Run's owner_id docstring -- for now
+    this applies uniformly regardless of role; an admin's own view is
+    scoped exactly like an analyst's."""
+    run = db.get(Run, run_id)
+    if run is None or run.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    return run
+
+
 @router.post("", response_model=RunRead, status_code=201)
 def create_run(
     forward_read: Optional[UploadFile] = File(None),
     reverse_read: Optional[UploadFile] = File(None),
     sample_id: Optional[str] = Form(None),
     config_overrides: Optional[str] = Form(None),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
@@ -118,6 +136,7 @@ def create_run(
         current_stage="import",
         status="in_progress",
         config_overrides=parsed_overrides,
+        owner_id=current_user.id,
     )
     db.add(run)
     db.flush()  # populate run.id before using it as the storage key
@@ -151,7 +170,11 @@ def create_run(
 
 
 @router.post("/{run_id}/execute", response_model=RunDetail)
-def execute_run_endpoint(run_id: str, db: Session = Depends(get_db)):
+def execute_run_endpoint(
+    run_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """
     Run every stage through to completion automatically (build-order item
     9 -- see app.orchestration.execute for the full sequencing/branching
@@ -160,10 +183,12 @@ def execute_run_endpoint(run_id: str, db: Session = Depends(get_db)):
     failure, no orientation overlap, usability failure) or an operational
     one (no reference database published) is data the caller reads off
     the Run/Stage response, not an HTTP error. 404/409 are reserved for
-    genuine request problems: an unknown run, or one that's already been
-    executed (no stage-level re-run for MVP -- see POST /runs/{id}/rerun
-    for trying different configuration instead).
+    genuine request problems: an unknown (or not-owned-by-the-caller)
+    run, or one that's already been executed (no stage-level re-run for
+    MVP -- see POST /runs/{id}/rerun for trying different configuration
+    instead).
     """
+    _get_owned_run(run_id, current_user, db)
     try:
         run = execute_run(run_id, db)
     except RunNotFoundError:
@@ -178,14 +203,20 @@ def execute_run_endpoint(run_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{run_id}/rerun", response_model=RunDetail, status_code=201)
-def rerun_run(run_id: str, payload: Optional[RerunRequest] = None, db: Session = Depends(get_db)):
+def rerun_run(
+    run_id: str,
+    payload: Optional[RerunRequest] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """
     CLAUDE.md's Configuration model: "trying different settings means
     triggering a whole new Run... rather than editing/re-running any
     piece of the original -- the two Runs sit side by side, fully
     independent and comparable." Reuses `run_id`'s already-stored AB1
     file(s) byte-for-byte under a brand-new Run id; the source Run itself
-    is never touched.
+    is never touched. Only the source Run's own owner may rerun it; the
+    new Run is owned by that same caller.
 
     By default the new Run is only created, not executed -- call
     POST /runs/{new_id}/execute next, same two-step shape as any
@@ -195,12 +226,18 @@ def rerun_run(run_id: str, payload: Optional[RerunRequest] = None, db: Session =
     is a RunDetail, so a fully-executed rerun's stages are visible
     immediately, without a follow-up GET.
     """
+    _get_owned_run(run_id, current_user, db)
+
     overrides = payload.config_overrides if payload else None
     new_sample_id = payload.sample_id if payload else None
     auto_execute = payload.auto_execute if payload else False
     try:
         new_run = create_rerun(
-            run_id, db, config_overrides=overrides, sample_id=new_sample_id
+            run_id,
+            db,
+            owner_id=current_user.id,
+            config_overrides=overrides,
+            sample_id=new_sample_id,
         )
     except RunNotFoundError:
         raise HTTPException(status_code=404, detail="Run not found.")
@@ -214,23 +251,34 @@ def rerun_run(run_id: str, payload: Optional[RerunRequest] = None, db: Session =
 
 
 @router.get("", response_model=List[RunRead])
-def list_runs(db: Session = Depends(get_db)):
-    return db.query(Run).order_by(Run.created_at.desc()).all()
+def list_runs(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Only the caller's own Runs -- see app.models.run.Run's owner_id
+    docstring. An admin sees only their own Runs here too, for now."""
+    return (
+        db.query(Run)
+        .filter(Run.owner_id == current_user.id)
+        .order_by(Run.created_at.desc())
+        .all()
+    )
 
 
 @router.get("/{run_id}", response_model=RunDetail)
-def get_run(run_id: str, db: Session = Depends(get_db)):
-    run = db.get(Run, run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found.")
-    return run
+def get_run(
+    run_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return _get_owned_run(run_id, current_user, db)
 
 
 @router.get("/{run_id}/stages/{stage_type}", response_model=StageDetail)
-def get_stage(run_id: str, stage_type: str, db: Session = Depends(get_db)):
-    run = db.get(Run, run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found.")
+def get_stage(
+    run_id: str,
+    stage_type: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _get_owned_run(run_id, current_user, db)
 
     if stage_type not in STAGE_TYPES:
         raise HTTPException(status_code=422, detail=f"Unknown stage_type '{stage_type}'.")
@@ -247,7 +295,11 @@ def get_stage(run_id: str, stage_type: str, db: Session = Depends(get_db)):
 
 
 @router.get("/{run_id}/report")
-def download_report(run_id: str, db: Session = Depends(get_db)):
+def download_report(
+    run_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """
     Stream Stage 11's generated PDF back to the caller.
 
@@ -263,9 +315,7 @@ def download_report(run_id: str, db: Session = Depends(get_db)):
     metadata vs. a PDF file) for different callers (an inspector UI vs.
     a literal file download).
     """
-    run = db.get(Run, run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found.")
+    run = _get_owned_run(run_id, current_user, db)
 
     stage = (
         db.query(Stage)
@@ -302,10 +352,13 @@ def download_report(run_id: str, db: Session = Depends(get_db)):
 
 
 @router.patch("/{run_id}", response_model=RunRead)
-def patch_run(run_id: str, payload: RunPatch, db: Session = Depends(get_db)):
-    run = db.get(Run, run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found.")
+def patch_run(
+    run_id: str,
+    payload: RunPatch,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    run = _get_owned_run(run_id, current_user, db)
 
     run.sample_id = payload.sample_id
     db.commit()

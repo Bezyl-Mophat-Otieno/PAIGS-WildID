@@ -17,6 +17,13 @@ copied byte-for-byte into the new Run's own directory
 convention Stage 0 establishes for a fresh upload. The new Run is only
 *created* here, exactly like create_run() -- it still needs its own
 POST /runs/{id}/execute call to actually run the pipeline.
+
+owner_id is required: since only a Run's own owner can trigger a rerun
+of it (app.api.runs._get_owned_run checks this before create_rerun is
+ever called), the new Run's owner is always the same person -- passed
+through explicitly rather than copied off `source`, so this function
+stays auth-agnostic (it just records whatever id it's given) the same
+way app.orchestration.execute does.
 """
 from datetime import datetime, timezone
 from typing import Dict, Optional
@@ -39,6 +46,7 @@ def create_rerun(
     source_run_id: str,
     db: Session,
     *,
+    owner_id: str,
     config_overrides: Optional[Dict[str, float]] = None,
     sample_id: Optional[str] = None,
 ) -> Run:
@@ -73,6 +81,7 @@ def create_rerun(
         status="in_progress",
         rerun_of=source.id,
         config_overrides=config_overrides or None,
+        owner_id=owner_id,
     )
     db.add(new_run)
     db.flush()  # populate new_run.id before using it as the storage key

@@ -41,6 +41,14 @@ class Run(Base):
     fully independent and comparable" -- this column is what lets an
     analyst (or the UI) actually find that sibling pair again later;
     the original Run itself is never modified by a rerun.
+
+    owner_id: whichever User created this Run (via POST /runs) or
+    triggered its rerun (via POST /runs/{id}/rerun) -- required, every
+    Run has exactly one owner. Runs are scoped per-owner for now: an
+    admin's own view of /runs is restricted to their own Runs exactly
+    like an analyst's, per the product decision that cross-tenant admin
+    visibility ("let an admin see everyone's runs") is a deliberate
+    later step, not this one. See app.api.runs._get_owned_run.
     """
 
     __tablename__ = "runs"
@@ -53,6 +61,7 @@ class Run(Base):
     status = Column(String, nullable=False, default="in_progress")
     config_overrides = Column(JSON, nullable=True)
     rerun_of = Column(String, ForeignKey("runs.id"), nullable=True)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False)
 
     stages = relationship(
         "Stage",

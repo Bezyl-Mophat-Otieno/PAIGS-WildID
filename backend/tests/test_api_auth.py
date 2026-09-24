@@ -29,8 +29,8 @@ class TestLogin:
 
 
 class TestMe:
-    def test_requires_a_token(self, client):
-        resp = client.get("/auth/me")
+    def test_requires_a_token(self, anon_client):
+        resp = anon_client.get("/auth/me")
 
         assert resp.status_code == 401
 

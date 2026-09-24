@@ -23,9 +23,22 @@ JWT_SECRET = os.environ.get("PAIGS_JWT_SECRET", "dev-insecure-jwt-secret-change-
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("PAIGS_ACCESS_TOKEN_EXPIRE_MINUTES", "720"))  # 12h
 
+# bcrypt's own default (12) is deliberately slow -- ~200-300ms per hash,
+# by design, to resist brute-forcing a stolen hashed_password column.
+# That's the right default for real accounts, but every test that logs
+# in (most of the suite, via the `client` fixture) pays that cost on a
+# freshly-seeded admin every single time, since each test gets its own
+# throwaway database -- multiplied across ~300 tests, that's minutes,
+# not seconds. Tests lower this via PAIGS_BCRYPT_ROUNDS (see
+# tests/conftest.py); nothing about the security property being tested
+# depends on the real cost factor.
+BCRYPT_ROUNDS = int(os.environ.get("PAIGS_BCRYPT_ROUNDS", "12"))
+
 
 def hash_password(plain_password: str) -> str:
-    return bcrypt.hashpw(plain_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    return bcrypt.hashpw(plain_password.encode("utf-8"), bcrypt.gensalt(rounds=BCRYPT_ROUNDS)).decode(
+        "utf-8"
+    )
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:

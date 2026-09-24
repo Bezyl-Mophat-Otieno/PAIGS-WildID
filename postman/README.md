@@ -53,3 +53,17 @@ into `backend/tests/fixtures/`) so this folder is self-contained.
   doesn't validate that a file placed in one slot is actually that read;
   a label/detected mismatch is only surfaced later, at Stage 5 (Orientation
   Detection), and never blocks the run.
+
+## Authentication (added 2026-09-25)
+
+Every `/runs` endpoint now requires a bearer token, and Runs are scoped per
+owner -- see the backend README's own "Authentication" section for the
+account model. This collection carries a collection-level Bearer auth using
+the `admin_token` environment variable, which every request inherits
+automatically (no per-request setup needed).
+
+**Run the "Authentication & Admin" folder first**, top to bottom -- its
+first request ("Admin login (seeded default account)") logs in as the
+seeded default admin and captures `admin_token`. Every other folder's
+requests depend on it being set, the same way "Happy path" needs to run
+before requests that reuse `run_id`.

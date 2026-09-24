@@ -38,6 +38,9 @@ class RunRead(BaseModel):
     # Set only on a Run created via POST /runs/{id}/rerun -- the
     # original Run this one reused the file(s) of.
     rerun_of: Optional[str] = None
+    # The User who created (or reran) this Run -- see app.models.run.Run's
+    # own docstring on owner_id for the current per-owner scoping rule.
+    owner_id: str
 
 
 class RunDetail(RunRead):
