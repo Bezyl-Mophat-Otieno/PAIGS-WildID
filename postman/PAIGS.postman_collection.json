@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "983d9021-a163-44bb-ac1e-761e869bb0a6",
-    "name": "PAIGS WildID -- Stage 0 (Import)",
-    "description": "Manual test collection for the PAIGS WildID backend, Stage 0 (Import) only.\n\nUpdated 2026-09-23 for the CLAUDE.md rewrite: upload now goes into two independently-optional labeled slots, forward_read and reverse_read -- a single file is a first-class path, not a fallback.\n\nSetup:\n1. From backend/, run: uvicorn app.main:app --reload\n2. Import the PAIGS environment (postman/PAIGS.postman_environment.json) alongside this collection and select it.\n3. Run 'Happy path' top to bottom first -- it captures run_id into the environment for later requests. 'Errors' can be run independently, except 'Patch run - rejects empty label', which reuses run_id.\n\nTest data lives in postman/test-data/ (copies of backend/tests/fixtures/*.ab1, plus a plain-text file for exercising the extension-rejection case).\n\nThis collection will grow as later pipeline stages (format_check, ab1_extraction, sanity_check, ...) are built.",
+    "name": "PAIGS WildID -- API",
+    "description": "Manual test collection for the PAIGS WildID backend.\n\nUpdated 2026-09-24: added the 'End-to-end (Orchestration)' folder covering POST /runs/{id}/execute (build-order item 9) and reference database publishing, so the full Stage 1-11 pipeline can be exercised from Postman, not just Stage 0 import.\n\nSetup:\n1. From backend/, run: uvicorn app.main:app --reload\n2. Import the PAIGS environment (postman/PAIGS.postman_environment.json) alongside this collection and select it.\n3. 'Happy path' and 'Errors' cover Stage 0 (Import) only -- run 'Happy path' top to bottom first, it captures run_id into the environment. 'Errors' can be run independently, except 'Patch run - rejects empty label', which reuses run_id.\n4. 'End-to-end (Orchestration)' exercises the full pipeline via POST /runs/{id}/execute -- run it top to bottom, in its own pass (it publishes a reference database as a side effect, which is process-wide state that would change what later Stage 0/Errors requests see if interleaved with those folders).\n\nTest data lives in postman/test-data/ (copies of backend/tests/fixtures/*.ab1, a plain-text file for exercising the extension-rejection case, and reference.fasta -- a single-entry reference database whose sequence is 3100.ab1's own real trimmed output, extracted from backend/tests/test_api_execute.py, guaranteeing a clean 100%-identity BLAST hit for the end-to-end 'completes' request).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -643,6 +643,527 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('status is 422', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "End-to-end (Orchestration)",
+      "item": [
+        {
+          "name": "Create run - single file, before any reference DB published",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs"
+              ]
+            },
+            "description": "First half of exercising 'stops at blast when no reference database is published' -- created before the publish request below runs, so no reference database is active yet.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "forward_read",
+                  "type": "file",
+                  "src": "/Users/mac/projects/paigs-wildid/postman/test-data/3100.ab1"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.environment.set('run_id_no_ref', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Execute run - stops at blast when no reference database is published",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs/{{run_id_no_ref}}/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id_no_ref}}",
+                "execute"
+              ]
+            },
+            "description": "Stages 1-8 (format_check through fasta) all succeed on a real single AB1 read; Stage 9 (blast) has nothing to search against yet, so the run stops there with status=failed rather than throwing -- an operational stop, not a biological one."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('run status is failed', () => pm.expect(body.status).to.eql('failed'));",
+                  "pm.test('stopped at blast', () => pm.expect(body.current_stage).to.eql('blast'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Publish reference database (matches 3100.ab1)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/reference-database/publish",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "reference-database",
+                "publish"
+              ]
+            },
+            "description": "Publishes a one-entry reference database whose sequence is 3100.ab1's own real trimmed output (see postman/test-data/reference.fasta) -- guarantees a clean, unambiguous 100%-identity/coverage BLAST hit for the requests below, so this exercises Stage 9-11 against a real match rather than a fabricated one.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "fasta",
+                  "type": "file",
+                  "src": "/Users/mac/projects/paigs-wildid/postman/test-data/reference.fasta"
+                },
+                {
+                  "key": "version",
+                  "type": "text",
+                  "value": "v1-e2e"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('version matches', () => pm.expect(pm.response.json().version).to.eql('v1-e2e'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create run - single file, for full completion",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs"
+              ]
+            },
+            "description": "A fresh run (a run can only be executed once -- see 'already executed' below), created now that a matching reference database is active.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "forward_read",
+                  "type": "file",
+                  "src": "/Users/mac/projects/paigs-wildid/postman/test-data/3100.ab1"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.environment.set('run_id_complete', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Execute run - completes the full pipeline (Stage 1 through Stage 11)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs/{{run_id_complete}}/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id_complete}}",
+                "execute"
+              ]
+            },
+            "description": "Runs every stage end to end: format_check, ab1_extraction, sanity_check, trim, orientation (skipped -- single-read path), consensus (skipped), usability_check, fasta, blast, identification, report. Always 200 -- the biological/QC outcome is data on the Run/Stage response, not an HTTP error."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('run status is completed', () => pm.expect(body.status).to.eql('completed'));",
+                  "pm.test('reached report stage', () => pm.expect(body.current_stage).to.eql('report'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get identification stage output - PASS",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs/{{run_id_complete}}/stages/identification",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id_complete}}",
+                "stages",
+                "identification"
+              ]
+            },
+            "description": "Confirms the clean match against the published reference entry."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const output = pm.response.json().output;",
+                  "pm.test('identification status is PASS', () => pm.expect(output.status).to.eql('PASS'));",
+                  "pm.test('candidate species matches published entry', () => {",
+                  "  pm.expect(output.candidate_species).to.eql('Testus fixturensis');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get report stage output - PDF written to disk",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs/{{run_id_complete}}/stages/report",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id_complete}}",
+                "stages",
+                "report"
+              ]
+            },
+            "description": "Stage 11's output is a path, not the PDF bytes themselves (see claude/stage-11-status.md) -- the file itself lives on the server's disk at report_path."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const output = pm.response.json().output;",
+                  "pm.test('report_path is set', () => pm.expect(output.report_path).to.be.a('string'));",
+                  "pm.test('report_path ends in .pdf', () => {",
+                  "  pm.expect(output.report_path.endsWith('.pdf')).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get run detail - all 12 stages present",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs/{{run_id_complete}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id_complete}}"
+              ]
+            },
+            "description": "Every stage_type has a row, including the two skipped ones (orientation, consensus) on this single-read run."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const stageTypes = pm.response.json().stages.map(s => s.stage_type).sort();",
+                  "const expected = ['ab1_extraction', 'blast', 'consensus', 'fasta', 'format_check', 'identification', 'import', 'orientation', 'report', 'sanity_check', 'trim', 'usability_check'];",
+                  "pm.test('all 12 stage types present', () => pm.expect(stageTypes).to.eql(expected));",
+                  "const skipped = pm.response.json().stages.filter(s => s.status === 'skipped').map(s => s.stage_type).sort();",
+                  "pm.test('orientation and consensus are skipped', () => {",
+                  "  pm.expect(skipped).to.eql(['consensus', 'orientation']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Execute run - already executed returns 409",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs/{{run_id_complete}}/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id_complete}}",
+                "execute"
+              ]
+            },
+            "description": "No stage-level re-run for MVP (see POST /runs/{id}/rerun, not yet built) -- a second execute call on the same run is rejected outright."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 409', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Execute run - unknown run returns 404",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs/does-not-exist/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "does-not-exist",
+                "execute"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create run - two real unrelated reads (3100 + 3730)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs"
+              ]
+            },
+            "description": "3100.ab1 and 3730.ab1 are confirmed-unrelated real fixtures (see claude/stage-5-6-status.md) -- both pass format_check/sanity_check/trim individually, but genuinely share no overlap.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "forward_read",
+                  "type": "file",
+                  "src": "/Users/mac/projects/paigs-wildid/postman/test-data/3100.ab1"
+                },
+                {
+                  "key": "reverse_read",
+                  "type": "file",
+                  "src": "/Users/mac/projects/paigs-wildid/postman/test-data/3730.ab1"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.environment.set('run_id_no_overlap', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Execute run - two unrelated reads stop at orientation (no overlap)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs/{{run_id_no_overlap}}/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id_no_overlap}}",
+                "execute"
+              ]
+            },
+            "description": "Stage 5's 'flags for review rather than guessing' path on real data, no synthetic reads needed -- maps to Run.status=failed since the Run.status enum has no REVIEW_REQUIRED state (see claude/orchestration-status.md)."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('run status is failed', () => pm.expect(body.status).to.eql('failed'));",
+                  "pm.test('stopped at orientation', () => pm.expect(body.current_stage).to.eql('orientation'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get orientation stage output - no_overlap_found",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs/{{run_id_no_overlap}}/stages/orientation",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id_no_overlap}}",
+                "stages",
+                "orientation"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"orientation is 'no_overlap_found'\", () => {",
+                  "  pm.expect(pm.response.json().output.orientation).to.eql('no_overlap_found');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get consensus stage output - skipped",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/runs/{{run_id_no_overlap}}/stages/consensus",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "runs",
+                "{{run_id_no_overlap}}",
+                "stages",
+                "consensus"
+              ]
+            },
+            "description": "Consensus never runs once orientation finds no overlap -- recorded as skipped, not failed."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('stage status is skipped', () => {",
+                  "  pm.expect(pm.response.json().status).to.eql('skipped');",
+                  "});"
                 ]
               }
             }
