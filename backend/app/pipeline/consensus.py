@@ -28,6 +28,18 @@ insertions/deletions within the overlap -- reasonable for short,
 already-trimmed Sanger reads, but a real indel inside the overlap isn't
 handled yet. `build_consensus` raises a clear error rather than guessing
 if the re-run alignment doesn't come back as exactly one block.
+
+Per-position quality, carried forward alongside the merged base (added
+because Stage 7's "minimum mean quality of the surviving sequence" rule
+can't be computed on the two-read path without it -- the original
+two-value resolve_base and quality-less ConsensusResult genuinely
+couldn't support that): whenever the resolved base traces back to one
+specific read's own definite call (a clean quality-based win, or that
+call surviving an ambiguity-consistency/intersection check), that read's
+own quality is used. In every other case -- outright agreement, a tie, or
+a fallback to ambiguous -- max(quality_a, quality_b) is used as the best
+evidence bound available, never inventing confidence beyond what either
+read actually reported.
 """
 from typing import Dict, FrozenSet, List, Tuple
 
@@ -45,11 +57,16 @@ IUPAC_TO_BASES: Dict[str, FrozenSet[str]] = {
 BASES_TO_IUPAC: Dict[FrozenSet[str], str] = {bases: code for code, bases in IUPAC_TO_BASES.items()}
 
 
-def resolve_base(base_a: str, quality_a: int, base_b: str, quality_b: int) -> Tuple[str, bool]:
+def resolve_base(
+    base_a: str, quality_a: int, base_b: str, quality_b: int
+) -> Tuple[str, int, bool]:
     """Decides the consensus call at one position. Returns (resolved_base,
-    is_ambiguous). `resolved_base` is a definite base (A/C/G/T) whenever
-    the call could be made with confidence, or an IUPAC ambiguity code
-    (possibly N) when it genuinely couldn't.
+    quality, is_ambiguous). `resolved_base` is a definite base (A/C/G/T)
+    whenever the call could be made with confidence, or an IUPAC
+    ambiguity code (possibly N) when it genuinely couldn't. `quality` is
+    that read's own quality when the resolved base traces back to one
+    specific read's definite call, else max(quality_a, quality_b) -- see
+    module docstring.
 
     Built around set intersection, which generalizes CLAUDE.md's explicit
     rules cleanly: two definite calls agreeing, and a definite call
@@ -63,35 +80,41 @@ def resolve_base(base_a: str, quality_a: int, base_b: str, quality_b: int) -> Tu
     b_options = IUPAC_TO_BASES.get(b, frozenset(b))
     a_definite = len(a_options) == 1
     b_definite = len(b_options) == 1
+    best_evidence = max(quality_a, quality_b)
 
     intersection = a_options & b_options
     if len(intersection) == 1:
-        return next(iter(intersection)), False
+        resolved = next(iter(intersection))
+        if a_definite and resolved == a:
+            return resolved, quality_a, False
+        if b_definite and resolved == b:
+            return resolved, quality_b, False
+        return resolved, best_evidence, False
     if intersection:
         # Narrowed but still not a single base (e.g. two overlapping,
         # non-singleton ambiguity codes) -- genuinely still ambiguous.
-        return BASES_TO_IUPAC.get(intersection, "N"), True
+        return BASES_TO_IUPAC.get(intersection, "N"), best_evidence, True
 
     # No base is consistent with both calls at all -- a genuine conflict.
     if a_definite and b_definite:
         if quality_a > quality_b:
-            return a, False
+            return a, quality_a, False
         if quality_b > quality_a:
-            return b, False
-        return BASES_TO_IUPAC.get(a_options | b_options, "N"), True
+            return b, quality_b, False
+        return BASES_TO_IUPAC.get(a_options | b_options, "N"), quality_a, True
 
     if a_definite and not b_definite:
         if quality_a > quality_b:
-            return a, False
-        return BASES_TO_IUPAC.get(a_options | b_options, "N"), True
+            return a, quality_a, False
+        return BASES_TO_IUPAC.get(a_options | b_options, "N"), best_evidence, True
     if b_definite and not a_definite:
         if quality_b > quality_a:
-            return b, False
-        return BASES_TO_IUPAC.get(a_options | b_options, "N"), True
+            return b, quality_b, False
+        return BASES_TO_IUPAC.get(a_options | b_options, "N"), best_evidence, True
 
     # Both ambiguous, no overlap at all -- no quality-based tiebreak makes
     # sense between two inherently multi-valued calls.
-    return BASES_TO_IUPAC.get(a_options | b_options, "N"), True
+    return BASES_TO_IUPAC.get(a_options | b_options, "N"), best_evidence, True
 
 
 def _oriented_reverse(
@@ -134,15 +157,17 @@ def build_consensus(
     overlap_length = t_end - t_start
 
     merged_overlap: List[str] = []
+    merged_overlap_quality: List[int] = []
     ambiguous_offsets: List[int] = []
     for i in range(overlap_length):
-        base, is_ambiguous = resolve_base(
+        base, quality, is_ambiguous = resolve_base(
             forward_sequence[t_start + i],
             forward_quality[t_start + i],
             oriented_reverse_sequence[q_start + i],
             oriented_reverse_quality[q_start + i],
         )
         merged_overlap.append(base)
+        merged_overlap_quality.append(quality)
         if is_ambiguous:
             ambiguous_offsets.append(i)
 
@@ -150,8 +175,13 @@ def build_consensus(
     suffix = oriented_reverse_sequence[q_end:]
     consensus_sequence = prefix + "".join(merged_overlap) + suffix
 
+    prefix_quality = forward_quality[:t_start]
+    suffix_quality = oriented_reverse_quality[q_end:]
+    quality_scores = prefix_quality + merged_overlap_quality + suffix_quality
+
     return ConsensusResult(
         consensus_sequence=consensus_sequence,
         consensus_length=len(consensus_sequence),
         ambiguous_positions=[len(prefix) + i for i in ambiguous_offsets],
+        quality_scores=quality_scores,
     )

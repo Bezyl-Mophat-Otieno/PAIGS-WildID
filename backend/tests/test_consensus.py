@@ -1,28 +1,25 @@
 """Stage 6 (Consensus Building) tests.
 
-Written first, against the not-yet-existing app.pipeline.consensus
-module, to confirm red before implementing.
+resolve_base now returns (base, quality, is_ambiguous) -- a three-way
+extension made necessary by Stage 7's own contract, not scope creep:
+CLAUDE.md's Stage 7 rules require "minimum mean quality of the surviving
+sequence," and that's only computable on the two-read path if Stage 6
+carries per-position quality forward. The original two-value signature
+(and ConsensusResult with no quality_scores field) genuinely couldn't
+support that, so both are extended here, test-first as usual.
 
-Per CLAUDE.md, per position: both reads agree -> keep it; they disagree
--> compare Phred quality, keep the more confident one; one gives a
-confident base and the other an IUPAC ambiguity code consistent with it
--> the confident base wins; both confident but genuinely disagree ->
-flagged ambiguous, never silently resolved.
+Effective quality per position, precisely: whenever the resolved base can
+be traced to one specific read's own definite call being confirmed as the
+answer (a clean quality-based win, or that read's call surviving an
+ambiguity-consistency/intersection check), that read's own quality is
+used -- it's genuinely that read's own confidence being kept. In every
+other case (both reads agreeing outright, a tie, or a fallback to
+ambiguous), max(quality_a, quality_b) is used as the best evidence bound
+available, never inventing confidence beyond what either read reported.
 
-Reading "compare quality, keep the more confident one" and "both
-confident but genuinely disagree -> ambiguous" as two branches of the
-same rule (documented in app/pipeline/consensus.py): when qualities
-differ, the higher one wins; when they're exactly equal, there's no
-basis to call either "more confident", so it's the ambiguous case.
-
-`resolve_base` (the per-position decision) is tested directly first,
-with every branch hand-verified; `build_consensus` (the full merge) is
-then tested end-to-end against a hand-verified synthetic overlap whose
-expected mismatches/resolutions were worked out and confirmed against a
-real Biopython alignment call before being written into these
-assertions (single-block coordinates, exact resolved bases at each
-seeded conflict) -- not just asserted against whatever the
-implementation happens to produce.
+Every expected value below (including the full quality_scores arrays in
+the two build_consensus end-to-end tests) was hand-derived from this rule
+before being written into the assertions.
 """
 import random
 
@@ -39,52 +36,59 @@ def _template(seed: int, length: int) -> str:
 
 
 class TestResolveBase:
-    def test_agreeing_definite_bases_returns_that_base_not_ambiguous(self):
-        base, is_ambiguous = resolve_base("A", 30, "A", 10)
+    def test_agreeing_definite_bases_returns_max_quality_not_ambiguous(self):
+        base, quality, is_ambiguous = resolve_base("A", 30, "A", 10)
 
         assert base == "A"
+        assert quality == 30  # max(30, 10) -- both reads corroborate the call
         assert is_ambiguous is False
 
     def test_disagreeing_definite_bases_picks_higher_quality(self):
-        base, is_ambiguous = resolve_base("A", 40, "C", 10)
+        base, quality, is_ambiguous = resolve_base("A", 40, "C", 10)
 
         assert base == "A"
+        assert quality == 40  # the winner's own quality
         assert is_ambiguous is False
 
-        base2, is_ambiguous2 = resolve_base("A", 10, "C", 40)
+        base2, quality2, is_ambiguous2 = resolve_base("A", 10, "C", 40)
 
         assert base2 == "C"
+        assert quality2 == 40
         assert is_ambiguous2 is False
 
     def test_disagreeing_definite_bases_with_equal_quality_is_ambiguous(self):
         # A and C, equal confidence -> genuinely can't be resolved.
         # IUPAC code for {A, C} is M.
-        base, is_ambiguous = resolve_base("A", 30, "C", 30)
+        base, quality, is_ambiguous = resolve_base("A", 30, "C", 30)
 
         assert base == "M"
+        assert quality == 30
         assert is_ambiguous is True
 
     def test_ambiguity_code_consistent_with_confident_base_lets_confident_base_win(self):
         # W = A or T. A confident "A" is consistent with it -> A wins,
-        # regardless of the relative quality scores.
-        base, is_ambiguous = resolve_base("A", 5, "W", 60)
+        # using A's own quality regardless of W's reported quality.
+        base, quality, is_ambiguous = resolve_base("A", 5, "W", 60)
 
         assert base == "A"
+        assert quality == 5
         assert is_ambiguous is False
 
     def test_n_is_treated_as_consistent_with_any_confident_base(self):
-        base, is_ambiguous = resolve_base("G", 5, "N", 60)
+        base, quality, is_ambiguous = resolve_base("G", 5, "N", 60)
 
         assert base == "G"
+        assert quality == 5
         assert is_ambiguous is False
 
     def test_ambiguity_code_inconsistent_with_confident_base_falls_back_to_quality(self):
         # Y = C or T. A confident "A" is NOT consistent with it -> a
         # genuine conflict, resolved the same way two definite bases
         # disagreeing would be.
-        base, is_ambiguous = resolve_base("A", 40, "Y", 10)
+        base, quality, is_ambiguous = resolve_base("A", 40, "Y", 10)
 
         assert base == "A"
+        assert quality == 40
         assert is_ambiguous is False
 
 
@@ -108,6 +112,7 @@ class TestBuildConsensus:
         assert result.consensus_sequence == template
         assert result.consensus_length == 180
         assert result.ambiguous_positions == []
+        assert result.quality_scores == [40] * 180
 
     def test_merges_mixed_resolution_cases_at_hand_verified_positions(self):
         # 60bp overlap "ACGTACGT..." (template[i] = "ACGT"[i % 4]),
@@ -154,6 +159,16 @@ class TestBuildConsensus:
         assert result.consensus_sequence == expected_consensus
         assert result.consensus_length == len(expected_consensus)
         assert result.ambiguous_positions == [10 + 20]  # prefix length + overlap index
+
+        # Every overlap position resolves to quality 40: the 56 agreeing
+        # positions via max(40, 35); idx10 via forward's own winning
+        # quality (40 > 10); idx20 (the tie) via quality_a, which is 40;
+        # idx30/idx40 via forward's own quality since forward's definite
+        # call is what's kept (25 and 5 on the reverse side are
+        # irrelevant, exactly as for the base itself). Prefix keeps
+        # forward's own quality (40); suffix keeps reverse's own,
+        # untouched, quality (35) -- neither was part of any comparison.
+        assert result.quality_scores == [40] * 70 + [35] * 10
 
     def test_raises_when_orientation_found_no_usable_overlap(self):
         orientation = OrientationResult(orientation="no_overlap_found")
