@@ -195,6 +195,8 @@ ATCGATCGATCGATCGATCGATCG
 
 **The reference database:** built ahead of time from a curated FASTA file of known species (species/taxonomy, sequence, accession number, source, database version) using BLAST's `makeblastdb` tool, versioned separately from the app's own database — the version used must be recorded per run.
 
+**Rules to configure:** the maximum number of ranked candidate hits kept for Stage 10 to evaluate (`max_hits`).
+
 **Input:** Stage 8's FASTA file + the current reference database.
 
 **Output:** a ranked list of candidate hits, e.g.:
@@ -233,7 +235,7 @@ ATCGATCGATCGATCGATCGATCG
 
 ## Configuration model
 
-Thresholds live in a config table with sensible starting defaults (pending real domain review) for: Stage 3's sanity thresholds, Stage 4's trim quality threshold, Stage 7's usability thresholds, and Stage 10's identity/coverage thresholds (potentially per DNA marker or species).
+Thresholds live in a config table with sensible starting defaults (pending real domain review) for: Stage 3's sanity thresholds, Stage 4's trim quality threshold, Stage 7's usability thresholds, Stage 9's maximum number of ranked BLAST hits kept, and Stage 10's identity/coverage thresholds (potentially per DNA marker or species).
 
 - **Global defaults** apply unless overridden.
 - **Before starting a run**, the analyst can review and override the defaults for that specific run — the values actually used are a deliberate choice at the point of analysis, not silently inherited.
