@@ -15,9 +15,12 @@ biopython>=1.83
 numpy>=1.26
 pandas>=2.2
 
-# Reporting (used from Stage 9 onward)
+# Reporting (used from Stage 11: PDF report generation)
 reportlab>=4.2
 
 # Testing
 pytest>=8.2
 httpx>=0.27   # required by FastAPI's TestClient
+pypdf>=6.0    # test-only: extracts real text back out of Stage 11's generated
+              # PDFs so tests can assert on report *content*, not just that
+              # bytes came out the other end
