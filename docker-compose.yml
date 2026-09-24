@@ -1,0 +1,24 @@
+# Local/dev convenience compose file for the PAIGS WildID backend.
+# Production deployments will likely want a managed Postgres instance
+# and a properly provisioned reference-database volume rather than this
+# file verbatim -- see backend/Dockerfile's comments for the reasoning.
+
+services:
+  wildid-backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      # PAIGS_DATABASE_URL: postgresql://user:pass@db:5432/wildid  # uncomment for Postgres; defaults to SQLite otherwise
+      PAIGS_STORAGE_ROOT: /app/storage
+    volumes:
+      - wildid-storage:/app/storage
+      # Mount the domain-expert-curated Stage 9 reference database here
+      # once its path is wired into the API/config layer. Never bake real
+      # reference data into the image -- it's versioned and updated on
+      # its own schedule, independent of the application (see CLAUDE.md's
+      # Stage 9 section and claude/stage-8-9-status.md).
+      # - ./reference-db:/app/reference-db:ro
+
+volumes:
+  wildid-storage:
