@@ -1,8 +1,10 @@
 import json
 from datetime import datetime, timezone
+from pathlib import Path as FilePath
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app import storage
@@ -242,6 +244,61 @@ def get_stage(run_id: str, stage_type: str, db: Session = Depends(get_db)):
     if stage is None:
         raise HTTPException(status_code=404, detail=f"Stage '{stage_type}' has not been run yet.")
     return stage
+
+
+@router.get("/{run_id}/report")
+def download_report(run_id: str, db: Session = Depends(get_db)):
+    """
+    Stream Stage 11's generated PDF back to the caller.
+
+    GET /runs/{id}/stages/report (above) already exposes the report
+    Stage's *audit-trail* output -- {"report_path": "..."} -- but that's
+    a server-side filesystem path, not something a browser or analyst
+    can actually fetch; nothing in the API surface let anyone retrieve
+    the PDF itself. Not in CLAUDE.md's original API shape list, but a
+    necessary complement to it -- a report nobody can download isn't yet
+    a usable Stage 11 output. Deliberately its own endpoint (GET
+    /runs/{id}/report) rather than a query param on the stage endpoint,
+    since the two return fundamentally different content types (JSON
+    metadata vs. a PDF file) for different callers (an inspector UI vs.
+    a literal file download).
+    """
+    run = db.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found.")
+
+    stage = (
+        db.query(Stage)
+        .filter(
+            Stage.run_id == run_id,
+            Stage.stage_type == "report",
+            Stage.status == "completed",
+        )
+        .order_by(Stage.attempt_number.desc())
+        .first()
+    )
+    if stage is None:
+        raise HTTPException(
+            status_code=404,
+            detail="This run has no completed report yet -- it either hasn't been "
+            "executed, or stopped before Stage 11 (Reporting).",
+        )
+
+    report_path = FilePath((stage.output or {}).get("report_path", ""))
+    if not report_path.is_file():
+        # Defensive: the Stage row says Reporting completed, but its file
+        # is missing from disk (e.g. storage was reset independently of
+        # the database -- exactly what happened locally after a `rm
+        # paigs.db` without also clearing storage/). Surfaced as a clear
+        # 404 rather than a raw FileResponse crash.
+        raise HTTPException(
+            status_code=404,
+            detail=f"Report stage completed but its PDF file is missing on disk "
+            f"({report_path}).",
+        )
+
+    filename = f"{run.sample_id}_report.pdf"
+    return FileResponse(report_path, media_type="application/pdf", filename=filename)
 
 
 @router.patch("/{run_id}", response_model=RunRead)
