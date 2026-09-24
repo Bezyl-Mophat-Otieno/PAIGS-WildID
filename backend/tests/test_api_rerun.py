@@ -235,3 +235,128 @@ class TestRerunChangesOutcome:
         original_after = client.get(f"/runs/{original_id}").json()
         assert original_after["status"] == "completed"
         assert original_after["current_stage"] == "report"
+
+
+class TestRerunAutoExecute:
+    """POST /runs/{id}/rerun's optional `auto_execute` flag -- addresses
+    the gap flagged in claude/configuration-and-rerun-status.md's own
+    Known follow-ups: without it, a rerun needs a separate
+    POST /runs/{new_id}/execute call to actually produce a result, the
+    same two-step shape as a fresh upload. `auto_execute: true` collapses
+    that into the rerun call itself -- the same "create, then immediately
+    run" convenience CLAUDE.md's UI flow already describes for a fresh
+    upload ("Upload triggers POST /runs followed immediately by
+    POST /runs/{id}/execute"), just built into the endpoint instead of
+    left to the caller to wire up as two requests.
+
+    Response shape: rerun's response_model is now RunDetail (it always
+    was semantically a Run, just previously serialized as the narrower
+    RunRead) so a fully-executed rerun's stages are visible in the same
+    response, without a follow-up GET.
+    """
+
+    def test_default_still_only_creates_without_executing(self, client, fixtures_dir):
+        """Omitting auto_execute (or the whole body) must behave exactly
+        as before this change -- every pre-existing test in this file
+        already covers this; this is just an explicit regression guard."""
+        create_resp = client.post(
+            "/runs", files={"forward_read": _file_field(fixtures_dir, "3100.ab1")}
+        )
+        source_id = create_resp.json()["id"]
+
+        resp = client.post(f"/runs/{source_id}/rerun")
+
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["status"] == "in_progress"
+        assert body["current_stage"] == "import"
+
+    def test_explicit_auto_execute_false_also_only_creates(self, client, fixtures_dir):
+        create_resp = client.post(
+            "/runs", files={"forward_read": _file_field(fixtures_dir, "3100.ab1")}
+        )
+        source_id = create_resp.json()["id"]
+
+        resp = client.post(f"/runs/{source_id}/rerun", json={"auto_execute": False})
+
+        assert resp.status_code == 201
+        assert resp.json()["status"] == "in_progress"
+        assert resp.json()["current_stage"] == "import"
+
+    def test_auto_execute_true_creates_and_runs_in_one_call(self, client, fixtures_dir):
+        create_resp = client.post(
+            "/runs", files={"forward_read": _file_field(fixtures_dir, "3100.ab1")}
+        )
+        source_id = create_resp.json()["id"]
+
+        # No reference database published -- same operational stop a
+        # fresh upload would hit; the point here is only that the rerun
+        # ran the pipeline at all within this single call.
+        resp = client.post(f"/runs/{source_id}/rerun", json={"auto_execute": True})
+
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["status"] == "failed"
+        assert body["current_stage"] == "blast"
+        stage_types = {s["stage_type"] for s in body["stages"]}
+        assert "blast" in stage_types
+        assert "import" in stage_types
+
+    def test_auto_execute_true_result_matches_a_separate_manual_execute_call(
+        self, client, fixtures_dir, temp_reference_data_root
+    ):
+        trimmed_3100 = (
+            "AGCGATTCCAGCTTCATATAGTCGAGTTGCAGACTACAATCCGAACTGAGAACAACTTTATGGGATTTGCT"
+            "TGACCTCGCGGTTTCGCTGCCCTTTGTATTGTCCATTGTAGCACGTGTGTAGCCCAAATCATAAGGGGCAT"
+            "GATGATTTGACGTCATCCCCACCTTCCTCCGGTTTGTCACCGGCAGTCAACTTAGAGTGCCCAACTTAAT"
+            "GATGGCAACTAAGCTTAAGGGTTGCGCTCGTTGCGGGACTTAACCCAACATCTCACGACACGAGCTGAC"
+            "GACAACCATGCACCACCTGTCACTCTGTCCCCCGAAGGGGAAAACTCTATCTCTAGAGGAGTCAGAGGA"
+            "TGTCAAGATTTGGTAAGGTTCTTCGCGTTGCTTCGAATTAAACCACATGCTCCACCGCTTGTGCGGGTC"
+            "CCCGTCAATTCCTTTGAGTTTCAACCTTGCGGTCGTACTCCCCAGGCGGAGTGCTTAATGCGTTAGCTG"
+            "CAGCACTAAGGGGCGGAAACCCCCTAACACTTAGCACTCATCGTTTACGGCGTGGACTACCAGGGTATC"
+            "TAATCCTGTTTGATCCCCACGCTTTCGCACATCAGCGTCAGTTACAGACCAGAAAGTCGCCTTCGCCAC"
+            "TGGTGTTCCTCCATATCTCTGCGCATTTCACCGCTACACAT"
+        )
+        fasta_bytes = f">REF3100 Testus fixturensis\n{trimmed_3100}\n".encode()
+        publish_resp = client.post(
+            "/reference-database/publish",
+            files={"fasta": ("reference.fasta", io.BytesIO(fasta_bytes), "text/plain")},
+            data={"version": "v1"},
+        )
+        assert publish_resp.status_code == 201, publish_resp.text
+
+        create_resp = client.post(
+            "/runs", files={"forward_read": _file_field(fixtures_dir, "3100.ab1")}
+        )
+        source_id = create_resp.json()["id"]
+
+        auto_resp = client.post(f"/runs/{source_id}/rerun", json={"auto_execute": True})
+
+        assert auto_resp.status_code == 201
+        body = auto_resp.json()
+        assert body["status"] == "completed"
+        assert body["current_stage"] == "report"
+
+        identification_stage = next(
+            s for s in body["stages"] if s["stage_type"] == "identification"
+        )
+        assert identification_stage["status"] == "completed"
+
+        # A GET afterward agrees with what the single auto_execute call
+        # already returned -- no follow-up execute call was needed.
+        refetched = client.get(f"/runs/{body['id']}").json()
+        assert refetched["status"] == "completed"
+        assert refetched["current_stage"] == "report"
+
+    def test_rerun_still_returns_the_run_even_without_a_body_at_all(self, client, fixtures_dir):
+        """A bare POST with no JSON body at all (not even {}) must still
+        work -- some HTTP clients (curl -X POST with no -d) send no body
+        rather than an empty object."""
+        create_resp = client.post(
+            "/runs", files={"forward_read": _file_field(fixtures_dir, "3100.ab1")}
+        )
+        source_id = create_resp.json()["id"]
+
+        resp = client.post(f"/runs/{source_id}/rerun")
+
+        assert resp.status_code == 201

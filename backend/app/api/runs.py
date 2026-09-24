@@ -175,7 +175,7 @@ def execute_run_endpoint(run_id: str, db: Session = Depends(get_db)):
     return run
 
 
-@router.post("/{run_id}/rerun", response_model=RunRead, status_code=201)
+@router.post("/{run_id}/rerun", response_model=RunDetail, status_code=201)
 def rerun_run(run_id: str, payload: Optional[RerunRequest] = None, db: Session = Depends(get_db)):
     """
     CLAUDE.md's Configuration model: "trying different settings means
@@ -183,11 +183,19 @@ def rerun_run(run_id: str, payload: Optional[RerunRequest] = None, db: Session =
     piece of the original -- the two Runs sit side by side, fully
     independent and comparable." Reuses `run_id`'s already-stored AB1
     file(s) byte-for-byte under a brand-new Run id; the source Run itself
-    is never touched. The new Run is created but not executed -- call
-    POST /runs/{new_id}/execute next, same as any freshly-uploaded run.
+    is never touched.
+
+    By default the new Run is only created, not executed -- call
+    POST /runs/{new_id}/execute next, same two-step shape as any
+    freshly-uploaded run. Pass `auto_execute: true` in the body to run it
+    through to completion (or its stopping point) in this same call
+    instead -- see RerunRequest's own docstring. Either way the response
+    is a RunDetail, so a fully-executed rerun's stages are visible
+    immediately, without a follow-up GET.
     """
     overrides = payload.config_overrides if payload else None
     new_sample_id = payload.sample_id if payload else None
+    auto_execute = payload.auto_execute if payload else False
     try:
         new_run = create_rerun(
             run_id, db, config_overrides=overrides, sample_id=new_sample_id
@@ -196,6 +204,10 @@ def rerun_run(run_id: str, payload: Optional[RerunRequest] = None, db: Session =
         raise HTTPException(status_code=404, detail="Run not found.")
     except (UnknownConfigKeyError, ConfigValueOutOfBoundsError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+    if auto_execute:
+        new_run = execute_run(new_run.id, db)
+
     return new_run
 
 

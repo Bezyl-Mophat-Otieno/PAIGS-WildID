@@ -54,7 +54,19 @@ class RerunRequest(BaseModel):
     """POST /runs/{id}/rerun's optional JSON body. No files here -- the
     whole point is reusing the source Run's already-stored file(s)
     (app.orchestration.rerun.create_rerun); only what's different about
-    the new attempt is supplied."""
+    the new attempt is supplied.
+
+    auto_execute: when true, the endpoint also runs the new Run through
+    to completion (or its stopping point) in the same call, exactly the
+    "create, then immediately run" convenience CLAUDE.md's UI flow
+    describes for a fresh upload ("Upload triggers POST /runs followed
+    immediately by POST /runs/{id}/execute") -- built into the endpoint
+    itself instead of left to the caller to wire up as two requests.
+    Defaults to false, matching a fresh upload's own two-step API shape
+    (POST /runs, then a separate POST /runs/{id}/execute) unless a
+    caller explicitly opts into the shortcut.
+    """
 
     config_overrides: Optional[Dict[str, float]] = None
     sample_id: Optional[str] = None
+    auto_execute: bool = False
