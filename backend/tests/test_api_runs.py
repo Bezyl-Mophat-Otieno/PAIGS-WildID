@@ -83,6 +83,49 @@ class TestCreateRun:
         assert resp.status_code == 201
         assert resp.json()["original_filenames"] == ["3730.ab1", "3100.ab1"]
 
+    def test_import_stage_output_records_slots_used_for_two_files(self, client, fixtures_dir):
+        """
+        Orchestration (POST /runs/{id}/execute) needs to know which upload
+        slot a stored file actually came from -- "stored_filenames" alone
+        is ambiguous for a single-file run (a lone forward_read and a lone
+        reverse_read both produce a one-element list). "slots" records
+        this explicitly, in the same order as stored_filenames.
+        """
+        resp = client.post(
+            "/runs",
+            files={
+                "forward_read": _file_field(fixtures_dir, "3100.ab1"),
+                "reverse_read": _file_field(fixtures_dir, "3730.ab1"),
+            },
+        )
+        run_id = resp.json()["id"]
+
+        stage_resp = client.get(f"/runs/{run_id}/stages/import")
+
+        assert stage_resp.json()["output"]["slots"] == ["forward", "reverse"]
+
+    def test_import_stage_output_records_slot_for_forward_only(self, client, fixtures_dir):
+        resp = client.post(
+            "/runs",
+            files={"forward_read": _file_field(fixtures_dir, "3100.ab1")},
+        )
+        run_id = resp.json()["id"]
+
+        stage_resp = client.get(f"/runs/{run_id}/stages/import")
+
+        assert stage_resp.json()["output"]["slots"] == ["forward"]
+
+    def test_import_stage_output_records_slot_for_reverse_only(self, client, fixtures_dir):
+        resp = client.post(
+            "/runs",
+            files={"reverse_read": _file_field(fixtures_dir, "3730.ab1")},
+        )
+        run_id = resp.json()["id"]
+
+        stage_resp = client.get(f"/runs/{run_id}/stages/import")
+
+        assert stage_resp.json()["output"]["slots"] == ["reverse"]
+
     def test_create_run_rejects_when_no_files_provided(self, client):
         resp = client.post("/runs", data={"sample_id": "WILD_EMPTY"})
 

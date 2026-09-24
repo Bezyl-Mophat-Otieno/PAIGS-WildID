@@ -9,6 +9,7 @@ from app import storage
 from app.db import get_db
 from app.models.run import Run
 from app.models.stage import STAGE_TYPES, Stage
+from app.orchestration.execute import RunAlreadyExecutedError, RunNotFoundError, execute_run
 from app.schemas.run import RunDetail, RunPatch, RunRead, StageDetail
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -43,7 +44,13 @@ def create_run(
     mismatch there is only ever noted, never blocking. Creates the Run (and
     its completed "import" Stage) immediately, before any parsing happens.
     """
-    uploads = [f for f in (forward_read, reverse_read) if f is not None and f.filename]
+    slots_and_uploads = [
+        (slot, f)
+        for slot, f in (("forward", forward_read), ("reverse", reverse_read))
+        if f is not None and f.filename
+    ]
+    slots = [slot for slot, _ in slots_and_uploads]
+    uploads = [f for _, f in slots_and_uploads]
 
     if not uploads:
         raise HTTPException(
@@ -84,6 +91,12 @@ def create_run(
         output={
             "original_filenames": original_filenames,
             "stored_filenames": stored_names,
+            # Which upload slot each stored file actually came from, same
+            # order as stored_filenames -- needed by orchestration
+            # (POST /runs/{id}/execute) since a single-file run's
+            # stored_filenames alone can't distinguish a lone forward_read
+            # from a lone reverse_read.
+            "slots": slots,
         },
         started_at=now,
         completed_at=_utcnow(),
@@ -93,6 +106,32 @@ def create_run(
     db.commit()
     db.refresh(run)
 
+    return run
+
+
+@router.post("/{run_id}/execute", response_model=RunDetail)
+def execute_run_endpoint(run_id: str, db: Session = Depends(get_db)):
+    """
+    Run every stage through to completion automatically (build-order item
+    9 -- see app.orchestration.execute for the full sequencing/branching
+    logic). Always returns 200 with the Run's resulting state, whichever
+    stage it stopped at -- a biological/QC stop (invalid file, sanity
+    failure, no orientation overlap, usability failure) or an operational
+    one (no reference database published) is data the caller reads off
+    the Run/Stage response, not an HTTP error. 404/409 are reserved for
+    genuine request problems: an unknown run, or one that's already been
+    executed (no stage-level re-run for MVP -- see POST /runs/{id}/rerun,
+    not yet built).
+    """
+    try:
+        run = execute_run(run_id, db)
+    except RunNotFoundError:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    except RunAlreadyExecutedError:
+        raise HTTPException(
+            status_code=409,
+            detail="Run has already been executed. Use POST /runs/{id}/rerun (not yet built) to try different configuration.",
+        )
     return run
 
 
