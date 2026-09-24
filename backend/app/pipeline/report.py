@@ -96,6 +96,24 @@ def generate_report(report_input: ReportInput) -> bytes:
         )
     story.append(Spacer(1, 12))
 
+    if report_input.ab1_extraction:
+        story.append(Paragraph("Raw Read Quality (pre-trim)", styles["Heading2"]))
+        for slot, extraction in report_input.ab1_extraction.items():
+            scores = extraction.quality_scores
+            if scores:
+                quality_line = (
+                    f"{slot.capitalize()} read -- raw length {extraction.raw_length} bp; "
+                    f"Phred quality min {min(scores)}, mean {sum(scores) / len(scores):.1f}, "
+                    f"max {max(scores)}"
+                )
+            else:
+                quality_line = (
+                    f"{slot.capitalize()} read -- raw length {extraction.raw_length} bp; "
+                    "no quality scores recorded"
+                )
+            story.append(Paragraph(quality_line, styles["Normal"]))
+        story.append(Spacer(1, 12))
+
     story.append(Paragraph("Trimming", styles["Heading2"]))
     for slot, trim in report_input.trim.items():
         trim_line = (

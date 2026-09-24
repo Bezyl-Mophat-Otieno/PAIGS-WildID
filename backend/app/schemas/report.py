@@ -20,12 +20,23 @@ duplication here). Whoever assembles a ReportInput already has these
 values in hand (they're what was passed as keyword thresholds into
 check_sanity_for_files / check_usability_from_*), so this is just a place
 to carry them through rather than a new source of truth.
+
+`ab1_extraction` is Stage 2's raw (pre-trim) output, carried through
+unmodified -- lets the report show an analyst what the read looked like
+before Stage 4 trimming and any downstream QC touched it (raw length,
+Phred quality range), matching this codebase's forensic/evidentiary
+audit-trail intent. Defaults to {} rather than being required, since a
+caller assembling a ReportInput from an older stored Stage row (from a
+run created before this field existed) won't have Stage 2's output handy
+-- the report section built from it degrades gracefully to "omitted" in
+that case rather than the whole report failing to build.
 """
 from datetime import datetime
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from app.schemas.ab1_extraction import ReadExtraction
 from app.schemas.blast import BlastSearchResult
 from app.schemas.consensus import ConsensusResult
 from app.schemas.fasta import FastaResult
@@ -50,6 +61,10 @@ class ReportInput(BaseModel):
     format_check: Dict[str, FileFormatCheck]
     sanity_check: Dict[str, SanityCheckResult]
     trim: Dict[str, TrimResult]
+
+    # Stage 2's raw (pre-trim) extraction, keyed the same "forward"/
+    # "reverse" way. See module docstring -- optional, defaults to {}.
+    ab1_extraction: Dict[str, ReadExtraction] = Field(default_factory=dict)
 
     # None on the two-read path; set on the single-read path along with
     # single_read_reason ("qc_failure" | "single_file_provided", per

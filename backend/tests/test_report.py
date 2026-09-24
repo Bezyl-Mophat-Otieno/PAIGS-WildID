@@ -26,6 +26,7 @@ from app.schemas.fasta import FastaResult
 from app.schemas.format_check import FileFormatCheck
 from app.schemas.identification import IdentificationResult
 from app.schemas.orientation import OrientationResult
+from app.schemas.ab1_extraction import ReadExtraction
 from app.schemas.report import ReportInput
 from app.schemas.sanity_check import SanityCheckResult
 from app.schemas.trim import TrimResult
@@ -42,6 +43,13 @@ def _hit(rank, species, identity, coverage, accession="REFXXX", evalue=0.0, bit_
         bit_score=bit_score,
         accession=accession,
     )
+
+
+def _quality_scores(length, seed):
+    """Deterministic pseudo-Phred trace (values 10-60) -- no real RNG
+    needed, just something with a non-trivial min/mean/max that a test
+    can recompute identically from the same (length, seed)."""
+    return [10 + ((i * seed * 7 + seed) % 51) for i in range(length)]
 
 
 def _base_report_input(**overrides):
@@ -72,6 +80,18 @@ def _base_report_input(**overrides):
                 trim_start=15,
                 trim_end=1088,
                 trim_params={"quality_threshold": 20, "min_window_size": 50},
+            ),
+        },
+        ab1_extraction={
+            "forward": ReadExtraction(
+                raw_sequence="A" * 795,
+                raw_length=795,
+                quality_scores=_quality_scores(795, seed=1),
+            ),
+            "reverse": ReadExtraction(
+                raw_sequence="A" * 1165,
+                raw_length=1165,
+                quality_scores=_quality_scores(1165, seed=2),
             ),
         },
         orientation=OrientationResult(
@@ -211,6 +231,13 @@ class TestGenerateReport:
                     trim_params={"quality_threshold": 20, "min_window_size": 50},
                 )
             },
+            ab1_extraction={
+                "forward": ReadExtraction(
+                    raw_sequence="A" * 795,
+                    raw_length=795,
+                    quality_scores=_quality_scores(795, seed=1),
+                )
+            },
             single_read_reason="single_file_provided",
             orientation=None,
             consensus=None,
@@ -266,6 +293,31 @@ class TestGenerateReport:
         text = _extract_text(generate_report(_base_report_input()))
 
         assert "v3" in text
+
+    def test_raw_read_quality_section_reports_raw_length_and_phred_stats(self):
+        scores_fwd = _quality_scores(795, seed=1)
+        scores_rev = _quality_scores(1165, seed=2)
+
+        text = _extract_text(generate_report(_base_report_input()))
+
+        assert "Raw Read Quality" in text
+        assert "raw length 795 bp" in text
+        assert f"min {min(scores_fwd)}" in text
+        assert f"mean {sum(scores_fwd) / len(scores_fwd):.1f}" in text
+        assert f"max {max(scores_fwd)}" in text
+        assert "raw length 1165 bp" in text
+        assert f"min {min(scores_rev)}" in text
+        assert f"mean {sum(scores_rev) / len(scores_rev):.1f}" in text
+        assert f"max {max(scores_rev)}" in text
+
+    def test_omits_raw_read_quality_section_when_extraction_data_absent(self):
+        report_input = _base_report_input(ab1_extraction={})
+
+        pdf_bytes = generate_report(report_input)
+        text = _extract_text(pdf_bytes)
+
+        assert pdf_bytes.startswith(b"%PDF")
+        assert "Raw Read Quality" not in text
 
 
 class TestWriteReportFile:

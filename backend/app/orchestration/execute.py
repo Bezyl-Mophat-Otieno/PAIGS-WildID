@@ -415,6 +415,7 @@ def continue_run_from_extraction(
         format_check=format_check,
         sanity_check=sanity_results,
         trim=trims,
+        ab1_extraction=extractions,
         single_read_reason=single_read_reason,
         orientation=orientation_result,
         consensus=consensus_result,
