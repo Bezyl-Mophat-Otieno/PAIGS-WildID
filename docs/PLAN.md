@@ -311,6 +311,19 @@ POST   /validation-batches        -> run a batch of runs with known expected_spe
 
 Upload triggers `POST /runs` followed immediately by `POST /runs/{id}/execute` — the default path requires no per-stage clicking, since almost every stage is mechanical with nothing for a human to decide mid-flight. The frontend polls `GET /runs/{id}` to drive the live stepper. Past stages remain individually viewable via `GET /runs/{id}/stages/{type}` at any time, instantly, with no recomputation.
 
+### Stage-level visualizations (deferred to the frontend build)
+
+Swagger (`/docs`) can only render raw JSON — it has no charting capability, so anything below is real frontend work (build-order step 9), not a backend or Swagger concern. Every item except the chromatogram viewer renders entirely from data the API already returns today — no new backend computation or storage, just charts over existing stage `output` fields, so none of this is a research risk to defer.
+
+- **Trim visualization (Stage 4):** a per-base quality-score line/bar chart across the read's full raw length, with the kept window (`trim_start`–`trim_end`) shaded — makes the trimming decision visually obvious instead of three raw numbers. Data already available: Stage 2's `quality_scores`, Stage 4's `trim_start`/`trim_end`.
+- **Pipeline funnel (all stages):** a simple bar/funnel chart of sequence length at each cleanup step — raw → trimmed → consensus → final — showing where and how much length was lost. Data already available: `ab1_extraction.raw_length`, `trim.trimmed_length`, `consensus.consensus_length`, `usability_check.final_length`.
+- **BLAST hit comparison (Stage 9/10):** a bar chart of identity %/coverage %/bit score across the ranked hit list, with Stage 10's `ambiguous_margin_pct` threshold drawn as a reference line — makes an AMBIGUOUS verdict visually intuitive (how close the top two candidates really are) instead of just two numbers in a table. Data already available: Stage 9's full ranked `hits` list.
+- **Consensus alignment view (Stage 6):** a side-by-side, position-aligned view of the two oriented reads with agreement/disagreement/ambiguous positions color-coded — shows exactly why each consensus base was called, not just the merged result. Data already available: Stage 6's `ambiguous_positions`, both reads' Stage 4 sequences/quality.
+- **Rerun comparison view:** since `POST /runs/{id}/rerun` produces a sibling Run under different configuration, a side-by-side diff (identity %, coverage %, final status, key thresholds) between a Run and its `rerun_of` sibling would make "what changed when I adjusted this threshold" visible at a glance, instead of manually comparing two separate report PDFs.
+- **Chromatogram viewer:** the raw four-channel fluorescence trace and per-base peak locations are already present in every stored AB1 file (Biopython's ABI parser exposes them, e.g. `DATA9`–`DATA12`, `PLOC2`, under `record.annotations["abif_raw"]`), but nothing in the pipeline currently reads or returns them. Rendering a chromatogram snippet around a flagged Stage 6 ambiguous position or a low-quality Stage 7 region would let an analyst visually verify a flagged call rather than trust the number alone — real value for a forensic/evidentiary audit trail. Unlike everything above, this needs one new backend endpoint to expose the raw trace channels first, since nothing currently returns them.
+
+Not duplicated here: the Validation Batch scorecard's own charts (accuracy/ambiguity/review rates, reproducibility, processing time) are already covered by the Technology map's `pandas + matplotlib/Plotly` row below and the Validation section above — a separate, already-planned piece of work.
+
 ## Technology map
 
 | Layer / stage | Technology | Role |
