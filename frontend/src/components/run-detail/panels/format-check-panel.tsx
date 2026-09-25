@@ -1,6 +1,6 @@
 import { CheckCircle2, XCircle } from "lucide-react"
 import { SlotGrid } from "@/components/run-detail/slot-grid"
-import { StatRow } from "@/components/run-detail/stat-row"
+import { StatRow } from "@/components/stat-row"
 import type { FormatCheckOutput } from "@/types/api"
 
 export function FormatCheckPanel({ output }: { readonly output: FormatCheckOutput }) {

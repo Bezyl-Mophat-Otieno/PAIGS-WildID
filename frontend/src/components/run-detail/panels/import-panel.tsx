@@ -1,4 +1,4 @@
-import { StatRow } from "@/components/run-detail/stat-row"
+import { StatRow } from "@/components/stat-row"
 import { READ_SLOT_LABELS } from "@/lib/stages"
 import type { ImportOutput } from "@/types/api"
 

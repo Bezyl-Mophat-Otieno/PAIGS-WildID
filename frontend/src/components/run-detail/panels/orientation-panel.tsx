@@ -1,6 +1,6 @@
 import { Info } from "lucide-react"
 import { SkippedPanel } from "@/components/run-detail/panel-states"
-import { StatRow } from "@/components/run-detail/stat-row"
+import { StatRow } from "@/components/stat-row"
 import { VerdictBadge } from "@/components/status-badge"
 import type { OrientationOutput } from "@/types/api"
 

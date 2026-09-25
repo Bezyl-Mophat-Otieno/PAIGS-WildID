@@ -1,5 +1,5 @@
 import { SlotGrid } from "@/components/run-detail/slot-grid"
-import { StatRow } from "@/components/run-detail/stat-row"
+import { StatRow } from "@/components/stat-row"
 import { VerdictBadge } from "@/components/status-badge"
 import { describeSingleReadReason } from "@/lib/single-read-reason"
 import type { SanityCheckMetadata, SanityCheckOutput } from "@/types/api"

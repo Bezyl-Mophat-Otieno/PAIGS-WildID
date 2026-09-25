@@ -247,10 +247,25 @@ export interface DashboardStats {
   quality_score_histogram: { bucket: string; count: number }[]
 }
 
+// GET /reference-database/versions and /active both return this shape.
+// There is no `published_by` field anywhere in the backend today -- no
+// user-lookup join is possible here (unlike RunRead's owner_id).
 export interface ReferenceDatabaseVersion {
   version: string
+  fasta_path: string
+  db_prefix: string
+  sequence_count: number
+  is_active: boolean
   published_at: string
-  published_by_id: string
+}
+
+// POST /publish's success response is a narrower shape than the version
+// list/active read -- no is_active or published_at, so a fresh
+// GET /reference-database/active is needed to show either afterward.
+export interface PublishReferenceDatabaseResult {
+  version: string
+  fasta_path: string
+  db_prefix: string
   sequence_count: number
 }
 

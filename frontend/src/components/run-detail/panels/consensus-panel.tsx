@@ -1,6 +1,6 @@
 import { ErrorPanel, SkippedPanel } from "@/components/run-detail/panel-states"
 import { SequenceBlock } from "@/components/run-detail/sequence-block"
-import { StatRow } from "@/components/run-detail/stat-row"
+import { StatRow } from "@/components/stat-row"
 import {
   Table,
   TableBody,

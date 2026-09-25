@@ -1,5 +1,5 @@
 import { ErrorPanel } from "@/components/run-detail/panel-states"
-import { StatRow } from "@/components/run-detail/stat-row"
+import { StatRow } from "@/components/stat-row"
 import {
   Table,
   TableBody,

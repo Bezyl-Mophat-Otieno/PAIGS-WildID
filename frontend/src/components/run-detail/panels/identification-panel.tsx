@@ -1,4 +1,4 @@
-import { StatRow } from "@/components/run-detail/stat-row"
+import { StatRow } from "@/components/stat-row"
 import { VerdictBadge } from "@/components/status-badge"
 import type { IdentificationOutput } from "@/types/api"
 

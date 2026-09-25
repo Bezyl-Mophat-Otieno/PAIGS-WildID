@@ -1,6 +1,6 @@
 import { SequenceBlock } from "@/components/run-detail/sequence-block"
 import { SlotGrid } from "@/components/run-detail/slot-grid"
-import { StatRow } from "@/components/run-detail/stat-row"
+import { StatRow } from "@/components/stat-row"
 import type { TrimOutput } from "@/types/api"
 
 export function TrimPanel({ output }: { readonly output: TrimOutput }) {
