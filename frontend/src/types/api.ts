@@ -238,13 +238,16 @@ export interface ConfigItem {
   updated_at: string
 }
 
+// species_breakdown is sorted (count desc, species asc) but NOT capped --
+// the frontend does its own top-N + "Other" collapsing. All 5
+// quality_score_histogram buckets are always present, even at count 0.
 export interface DashboardStats {
   total_samples_processed: number
   identification_rate: number | null
   qc_pass_rate: number | null
   pending_review_count: number
   species_breakdown: { species: string; count: number }[]
-  quality_score_histogram: { bucket: string; count: number }[]
+  quality_score_histogram: { label: string; count: number }[]
 }
 
 // GET /reference-database/versions and /active both return this shape.
