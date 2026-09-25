@@ -1,11 +1,14 @@
 import axios from "axios"
 
-// No shared /api prefix on the backend -- routers mount at root
-// (/auth, /runs, /config, ...). Vite's dev proxy (vite.config.ts) forwards
-// those paths to the backend; in production VITE_API_BASE_URL points at it
-// directly.
+// The backend itself has no /api prefix (routers mount at root: /auth,
+// /runs, /config, ...), but several of those names collide with this SPA's
+// own routes (e.g. /runs/:id is both a page and a backend path) -- `/api`
+// here is a dev-only namespace that Vite's proxy strips before forwarding
+// (see vite.config.ts), so a hard navigation to a frontend route never gets
+// intercepted as an API call. In production VITE_API_BASE_URL points at the
+// deployed backend's real origin directly, and this default is unused.
 export const apiClient = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL ?? "",
+  baseURL: import.meta.env.VITE_API_BASE_URL ?? "/api",
 })
 
 const TOKEN_STORAGE_KEY = "wildid.access_token"
