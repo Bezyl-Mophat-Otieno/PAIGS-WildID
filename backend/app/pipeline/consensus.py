@@ -40,11 +40,22 @@ own quality is used. In every other case -- outright agreement, a tie, or
 a fallback to ambiguous -- max(quality_a, quality_b) is used as the best
 evidence bound available, never inventing confidence beyond what either
 read actually reported.
+
+`resolve_base` also names *how* it resolved each position (its 4th
+return value, `method`) and `build_consensus` records one
+ResolvedPosition per resolved overlap position -- the complement of
+ambiguous_positions, and the direct answer to "extend the Consensus
+stage to record every resolved position, not just the unresolved ones
+... to show an analyst 'here's what changed and why'". `method` is
+always one of this module's own three rules above (agreement,
+ambiguity-consistency, quality-tiebreak) -- there's no separate
+"resolution algorithm" to document, this is just naming the branch of
+the same logic that already decided the base.
 """
-from typing import Dict, FrozenSet, List, Tuple
+from typing import Dict, FrozenSet, List, Optional, Tuple
 
 from app.pipeline._alignment import build_pairwise_aligner
-from app.schemas.consensus import ConsensusResult
+from app.schemas.consensus import ConsensusResult, ResolvedPosition
 from app.schemas.orientation import OrientationResult
 
 IUPAC_TO_BASES: Dict[str, FrozenSet[str]] = {
@@ -59,14 +70,17 @@ BASES_TO_IUPAC: Dict[FrozenSet[str], str] = {bases: code for code, bases in IUPA
 
 def resolve_base(
     base_a: str, quality_a: int, base_b: str, quality_b: int
-) -> Tuple[str, int, bool]:
+) -> Tuple[str, int, bool, Optional[str]]:
     """Decides the consensus call at one position. Returns (resolved_base,
-    quality, is_ambiguous). `resolved_base` is a definite base (A/C/G/T)
-    whenever the call could be made with confidence, or an IUPAC
-    ambiguity code (possibly N) when it genuinely couldn't. `quality` is
-    that read's own quality when the resolved base traces back to one
-    specific read's definite call, else max(quality_a, quality_b) -- see
-    module docstring.
+    quality, is_ambiguous, method). `resolved_base` is a definite base
+    (A/C/G/T) whenever the call could be made with confidence, or an
+    IUPAC ambiguity code (possibly N) when it genuinely couldn't.
+    `quality` is that read's own quality when the resolved base traces
+    back to one specific read's definite call, else
+    max(quality_a, quality_b) -- see module docstring. `method` is
+    "agreement" | "ambiguity_consistency" | "quality_tiebreak" when
+    `is_ambiguous` is False, else None (nothing was actually resolved, so
+    no method applies).
 
     Built around set intersection, which generalizes CLAUDE.md's explicit
     rules cleanly: two definite calls agreeing, and a definite call
@@ -85,36 +99,42 @@ def resolve_base(
     intersection = a_options & b_options
     if len(intersection) == 1:
         resolved = next(iter(intersection))
+        if a_definite and b_definite:
+            # Only possible when a == b: two distinct single-base sets
+            # never intersect.
+            return resolved, quality_a, False, "agreement"
         if a_definite and resolved == a:
-            return resolved, quality_a, False
+            return resolved, quality_a, False, "ambiguity_consistency"
         if b_definite and resolved == b:
-            return resolved, quality_b, False
-        return resolved, best_evidence, False
+            return resolved, quality_b, False, "ambiguity_consistency"
+        # Both sides are themselves ambiguity codes, but happen to narrow
+        # to exactly one base together (e.g. R={A,G} + M={A,C} -> A).
+        return resolved, best_evidence, False, "ambiguity_consistency"
     if intersection:
         # Narrowed but still not a single base (e.g. two overlapping,
         # non-singleton ambiguity codes) -- genuinely still ambiguous.
-        return BASES_TO_IUPAC.get(intersection, "N"), best_evidence, True
+        return BASES_TO_IUPAC.get(intersection, "N"), best_evidence, True, None
 
     # No base is consistent with both calls at all -- a genuine conflict.
     if a_definite and b_definite:
         if quality_a > quality_b:
-            return a, quality_a, False
+            return a, quality_a, False, "quality_tiebreak"
         if quality_b > quality_a:
-            return b, quality_b, False
-        return BASES_TO_IUPAC.get(a_options | b_options, "N"), quality_a, True
+            return b, quality_b, False, "quality_tiebreak"
+        return BASES_TO_IUPAC.get(a_options | b_options, "N"), quality_a, True, None
 
     if a_definite and not b_definite:
         if quality_a > quality_b:
-            return a, quality_a, False
-        return BASES_TO_IUPAC.get(a_options | b_options, "N"), best_evidence, True
+            return a, quality_a, False, "quality_tiebreak"
+        return BASES_TO_IUPAC.get(a_options | b_options, "N"), best_evidence, True, None
     if b_definite and not a_definite:
         if quality_b > quality_a:
-            return b, quality_b, False
-        return BASES_TO_IUPAC.get(a_options | b_options, "N"), best_evidence, True
+            return b, quality_b, False, "quality_tiebreak"
+        return BASES_TO_IUPAC.get(a_options | b_options, "N"), best_evidence, True, None
 
     # Both ambiguous, no overlap at all -- no quality-based tiebreak makes
     # sense between two inherently multi-valued calls.
-    return BASES_TO_IUPAC.get(a_options | b_options, "N"), best_evidence, True
+    return BASES_TO_IUPAC.get(a_options | b_options, "N"), best_evidence, True, None
 
 
 def _oriented_reverse(
@@ -159,17 +179,33 @@ def build_consensus(
     merged_overlap: List[str] = []
     merged_overlap_quality: List[int] = []
     ambiguous_offsets: List[int] = []
+    resolved_offsets: List[ResolvedPosition] = []
     for i in range(overlap_length):
-        base, quality, is_ambiguous = resolve_base(
-            forward_sequence[t_start + i],
-            forward_quality[t_start + i],
-            oriented_reverse_sequence[q_start + i],
-            oriented_reverse_quality[q_start + i],
+        fwd_base = forward_sequence[t_start + i]
+        fwd_quality = forward_quality[t_start + i]
+        rev_base = oriented_reverse_sequence[q_start + i]
+        rev_quality = oriented_reverse_quality[q_start + i]
+        base, quality, is_ambiguous, method = resolve_base(
+            fwd_base, fwd_quality, rev_base, rev_quality
         )
         merged_overlap.append(base)
         merged_overlap_quality.append(quality)
         if is_ambiguous:
             ambiguous_offsets.append(i)
+        else:
+            resolved_offsets.append(
+                ResolvedPosition(
+                    position=i,  # offset for now -- shifted to an absolute position below
+                    forward_base=fwd_base,
+                    forward_quality=fwd_quality,
+                    reverse_base=rev_base,
+                    reverse_quality=rev_quality,
+                    resolved_base=base,
+                    resolved_quality=quality,
+                    changed=fwd_base.upper() != rev_base.upper(),
+                    method=method,
+                )
+            )
 
     prefix = forward_sequence[:t_start]
     suffix = oriented_reverse_sequence[q_end:]
@@ -179,9 +215,15 @@ def build_consensus(
     suffix_quality = oriented_reverse_quality[q_end:]
     quality_scores = prefix_quality + merged_overlap_quality + suffix_quality
 
+    resolved_positions = [
+        resolved.model_copy(update={"position": len(prefix) + resolved.position})
+        for resolved in resolved_offsets
+    ]
+
     return ConsensusResult(
         consensus_sequence=consensus_sequence,
         consensus_length=len(consensus_sequence),
         ambiguous_positions=[len(prefix) + i for i in ambiguous_offsets],
         quality_scores=quality_scores,
+        resolved_positions=resolved_positions,
     )

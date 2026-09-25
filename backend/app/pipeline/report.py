@@ -152,6 +152,31 @@ def generate_report(report_input: ReportInput) -> bytes:
         if consensus.ambiguous_positions:
             consensus_line += f" at {consensus.ambiguous_positions}"
         story.append(Paragraph(consensus_line, styles["Normal"]))
+
+        # "Here's what changed and why" -- every resolved overlap
+        # position is recorded on the Stage itself (see
+        # app.schemas.consensus.ResolvedPosition), but printing every
+        # single one here (most are unremarkable outright agreements)
+        # would bury the interesting ones in an ordinary two-read run.
+        # The summary count covers all of them; only the positions where
+        # the two reads actually disagreed (changed=True) get printed
+        # individually, since those are the ones an analyst would
+        # plausibly want to double-check.
+        if consensus.resolved_positions:
+            changed = [p for p in consensus.resolved_positions if p.changed]
+            resolved_line = (
+                f"{len(consensus.resolved_positions)} resolved position(s), "
+                f"{len(changed)} of which needed reconciling between the two reads"
+            )
+            story.append(Paragraph(resolved_line, styles["Normal"]))
+            for p in changed:
+                detail = (
+                    f"  Position {p.position}: forward={p.forward_base} (Q{p.forward_quality}), "
+                    f"reverse={p.reverse_base} (Q{p.reverse_quality}) -> {p.resolved_base} "
+                    f"(Q{p.resolved_quality}), via {p.method}"
+                )
+                story.append(Paragraph(detail, styles["Normal"]))
+
         story.append(Spacer(1, 12))
 
     usability = report_input.usability_check

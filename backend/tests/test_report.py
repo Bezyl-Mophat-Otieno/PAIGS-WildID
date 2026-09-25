@@ -21,7 +21,7 @@ from pypdf import PdfReader
 
 from app.pipeline.report import DEFAULT_LIMITATION, generate_report, write_report_file
 from app.schemas.blast import BlastHit, BlastSearchResult
-from app.schemas.consensus import ConsensusResult
+from app.schemas.consensus import ConsensusResult, ResolvedPosition
 from app.schemas.fasta import FastaResult
 from app.schemas.format_check import FileFormatCheck
 from app.schemas.identification import IdentificationResult
@@ -267,6 +267,136 @@ class TestGenerateReport:
         assert "2 ambiguous position" in text
         assert "12" in text
         assert "340" in text
+
+    def test_resolved_position_summary_is_reported(self):
+        report_input = _base_report_input(
+            consensus=ConsensusResult(
+                consensus_sequence="A" * 680,
+                consensus_length=680,
+                ambiguous_positions=[],
+                quality_scores=[40] * 680,
+                resolved_positions=[
+                    ResolvedPosition(
+                        position=5,
+                        forward_base="A",
+                        forward_quality=40,
+                        reverse_base="A",
+                        reverse_quality=35,
+                        resolved_base="A",
+                        resolved_quality=40,
+                        changed=False,
+                        method="agreement",
+                    ),
+                    ResolvedPosition(
+                        position=17,
+                        forward_base="G",
+                        forward_quality=40,
+                        reverse_base="C",
+                        reverse_quality=10,
+                        resolved_base="G",
+                        resolved_quality=40,
+                        changed=True,
+                        method="quality_tiebreak",
+                    ),
+                ],
+            )
+        )
+
+        text = _extract_text(generate_report(report_input))
+
+        # Overall summary: how many were resolved at all, and how many
+        # of those actually needed reconciling (changed=True) -- "here's
+        # what changed" starts with a headline count.
+        assert "2 resolved position" in text
+        assert "1" in text  # the 1 that needed reconciling
+
+    def test_changed_resolved_positions_are_listed_with_detail(self):
+        report_input = _base_report_input(
+            consensus=ConsensusResult(
+                consensus_sequence="A" * 680,
+                consensus_length=680,
+                ambiguous_positions=[],
+                quality_scores=[40] * 680,
+                resolved_positions=[
+                    ResolvedPosition(
+                        position=5,
+                        forward_base="A",
+                        forward_quality=40,
+                        reverse_base="A",
+                        reverse_quality=35,
+                        resolved_base="A",
+                        resolved_quality=40,
+                        changed=False,
+                        method="agreement",
+                    ),
+                    ResolvedPosition(
+                        position=17,
+                        forward_base="G",
+                        forward_quality=40,
+                        reverse_base="C",
+                        reverse_quality=10,
+                        resolved_base="G",
+                        resolved_quality=40,
+                        changed=True,
+                        method="quality_tiebreak",
+                    ),
+                    ResolvedPosition(
+                        position=99,
+                        forward_base="T",
+                        forward_quality=38,
+                        reverse_base="W",
+                        reverse_quality=20,
+                        resolved_base="T",
+                        resolved_quality=38,
+                        changed=True,
+                        method="ambiguity_consistency",
+                    ),
+                ],
+            )
+        )
+
+        text = _extract_text(generate_report(report_input))
+
+        # Only the two "changed" positions get a detail line -- the
+        # plain agreement at position 5 isn't interesting enough to
+        # print individually (the summary count above already covers
+        # it), keeping the PDF from ballooning on ordinary two-read runs
+        # where most overlap positions simply agree.
+        assert "17" in text
+        assert "quality_tiebreak" in text
+        assert "99" in text
+        assert "ambiguity_consistency" in text
+
+    def test_no_detail_list_when_every_resolved_position_was_a_plain_agreement(self):
+        report_input = _base_report_input(
+            consensus=ConsensusResult(
+                consensus_sequence="A" * 680,
+                consensus_length=680,
+                ambiguous_positions=[],
+                quality_scores=[40] * 680,
+                resolved_positions=[
+                    ResolvedPosition(
+                        position=i,
+                        forward_base="A",
+                        forward_quality=40,
+                        reverse_base="A",
+                        reverse_quality=35,
+                        resolved_base="A",
+                        resolved_quality=40,
+                        changed=False,
+                        method="agreement",
+                    )
+                    for i in range(3)
+                ],
+            )
+        )
+
+        text = _extract_text(generate_report(report_input))
+
+        assert "3 resolved position" in text
+        assert "0" in text  # 0 needed reconciling
+        assert "quality_tiebreak" not in text
+        assert "ambiguity_consistency" not in text
 
     def test_default_limitation_text_is_included(self):
         text = _extract_text(generate_report(_base_report_input()))
