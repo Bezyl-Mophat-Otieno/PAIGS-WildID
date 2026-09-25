@@ -1,4 +1,4 @@
-import type { StageType } from "@/types/api"
+import type { StageSummary, StageType } from "@/types/api"
 
 // The pipeline's fixed 12-stage sequence (CLAUDE.md's Run/Stage model) --
 // the stepper always renders all 12, regardless of how far a run got.
@@ -36,3 +36,11 @@ export const READ_SLOT_LABELS = {
   forward: "Forward Read",
   reverse: "Reverse Read",
 } as const
+
+// A stage with no row yet (still "pending") has nothing to fetch --
+// GET /runs/{id}/stages/{type} would just 404. Shared by Run Detail and
+// Rerun, both of which need to know before calling useStage.
+export function stageHasRun(stages: StageSummary[], stageType: StageType) {
+  const summary = stages.find((s) => s.stage_type === stageType)
+  return Boolean(summary && summary.status !== "pending")
+}

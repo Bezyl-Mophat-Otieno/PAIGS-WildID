@@ -8,12 +8,8 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { useAuth } from "@/context/auth-context"
 import { useRun } from "@/hooks/use-run"
 import { useStage } from "@/hooks/use-stage"
-import { STAGE_LABELS } from "@/lib/stages"
-import type { StageSummary, StageType } from "@/types/api"
-
-function hasRunFn(summary: StageSummary | undefined) {
-  return Boolean(summary && summary.status !== "pending")
-}
+import { STAGE_LABELS, stageHasRun } from "@/lib/stages"
+import type { StageType } from "@/types/api"
 
 export function RunDetailPage() {
   const { runId } = useParams<{ runId: string }>()
@@ -33,24 +29,23 @@ export function RunDetailPage() {
   // hooks) -- fall back to safe/disabled values until `run` and
   // `activeStage` are actually known, and only branch into the loading/
   // error views after all hooks have been called.
-  const stageMap = new Map((run?.stages ?? []).map((s) => [s.stage_type, s]))
+  const stages = run?.stages ?? []
   const effectiveActiveStage = activeStage ?? "import"
-  const activeSummary = stageMap.get(effectiveActiveStage)
 
   const activeStageQuery = useStage(
     run?.id ?? "",
     effectiveActiveStage,
-    Boolean(run) && hasRunFn(activeSummary)
+    stageHasRun(stages, effectiveActiveStage)
   )
   const sanityCheckQuery = useStage(
     run?.id ?? "",
     "sanity_check",
-    Boolean(run) && hasRunFn(stageMap.get("sanity_check"))
+    stageHasRun(stages, "sanity_check")
   )
   const orientationQuery = useStage(
     run?.id ?? "",
     "orientation",
-    Boolean(run) && hasRunFn(stageMap.get("orientation"))
+    stageHasRun(stages, "orientation")
   )
 
   if (isLoading) {
@@ -80,7 +75,7 @@ export function RunDetailPage() {
             stageType={activeStage}
             stage={activeStageQuery.data}
             isLoading={activeStageQuery.isLoading}
-            hasRun={hasRunFn(activeSummary)}
+            hasRun={stageHasRun(stages, effectiveActiveStage)}
             runId={run.id}
             sampleId={run.sample_id}
             sanityCheckStage={sanityCheckQuery.data}

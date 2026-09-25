@@ -2,6 +2,7 @@ import { useQueries } from "@tanstack/react-query"
 import { getStage } from "@/api/runs"
 import { stageQueryKey } from "@/hooks/use-stage"
 import { buildEffectiveThresholds } from "@/lib/effective-thresholds"
+import { stageHasRun } from "@/lib/stages"
 import type { Stage, StageSummary, StageType } from "@/types/api"
 
 const RELEVANT_STAGES: StageType[] = [
@@ -13,21 +14,16 @@ const RELEVANT_STAGES: StageType[] = [
   "identification",
 ]
 
-// Shared by Run Detail's "Thresholds used" panel and (later) the Rerun
-// screen's prefill -- reads the same six stages' own records rather than
+// Shared by Run Detail's "Thresholds used" panel and the Rerun screen's
+// prefill/diff -- reads the same six stages' own records rather than
 // duplicating the reconstruction per screen (DESIGN.md's explicit ask).
 export function useEffectiveThresholds(runId: string, stages: StageSummary[]) {
-  const stageMap = new Map(stages.map((s) => [s.stage_type, s]))
-
   const queries = useQueries({
-    queries: RELEVANT_STAGES.map((stageType) => {
-      const summary = stageMap.get(stageType)
-      return {
-        queryKey: stageQueryKey(runId, stageType),
-        queryFn: () => getStage(runId, stageType),
-        enabled: Boolean(summary && summary.status !== "pending"),
-      }
-    }),
+    queries: RELEVANT_STAGES.map((stageType) => ({
+      queryKey: stageQueryKey(runId, stageType),
+      queryFn: () => getStage(runId, stageType),
+      enabled: stageHasRun(stages, stageType),
+    })),
   })
 
   const stagesByType: Partial<Record<StageType, Stage>> = {}

@@ -43,11 +43,18 @@ export async function executeRun(runId: string) {
 export interface RerunPayload {
   sample_id?: string
   config_overrides?: Record<string, number>
+  // Defaults to false server-side (creates but doesn't run the sibling) --
+  // this app always passes true to match every other run-creation flow.
   auto_execute?: boolean
 }
 
+// JSON body (the one Run-mutating endpoint that isn't multipart, since
+// there's no file to upload -- the source run's own stored files are
+// copied server-side). Always responds 201 with RunDetail regardless of
+// auto_execute; with auto_execute true, `stages` already reflects the full
+// execution result, same as POST /execute -- no follow-up fetch needed.
 export async function rerunRun(runId: string, payload: RerunPayload) {
-  const { data } = await apiClient.post<Run>(`/runs/${runId}/rerun`, payload)
+  const { data } = await apiClient.post<RunDetail>(`/runs/${runId}/rerun`, payload)
   return data
 }
 
