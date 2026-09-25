@@ -90,9 +90,19 @@ export async function renameRun(runId: string, sampleId: string) {
   return data
 }
 
-export function getReportsExportUrl(runIds?: string[]) {
-  if (!runIds || runIds.length === 0) return "/runs/reports/export"
+// Same auth requirement as the per-run download -- fetch as a blob rather
+// than linking directly. Omitting `runIds` entirely (not passing []) means
+// "export every run I can see with a completed report"; the backend
+// silently drops any id that doesn't exist, isn't visible to the caller,
+// or has no completed report, and only 404s if that leaves nothing at all
+// to zip.
+export async function downloadReportsExportBlob(runIds?: string[]) {
   const params = new URLSearchParams()
-  for (const id of runIds) params.append("run_ids", id)
-  return `/runs/reports/export?${params.toString()}`
+  for (const id of runIds ?? []) params.append("run_ids", id)
+
+  const { data } = await apiClient.get("/runs/reports/export", {
+    params,
+    responseType: "blob",
+  })
+  return data as Blob
 }
