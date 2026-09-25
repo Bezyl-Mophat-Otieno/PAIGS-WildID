@@ -1,10 +1,13 @@
+import io
 import json
+import re
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path as FilePath
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from app import storage
@@ -310,6 +313,92 @@ def list_runs(current_user: User = Depends(get_current_user), db: Session = Depe
     if current_user.role != "admin":
         query = query.filter(Run.owner_id == current_user.id)
     return query.order_by(Run.created_at.desc()).all()
+
+
+def _safe_zip_entry_component(value: str) -> str:
+    """Sanitizes a Run's sample_id for use inside a zip entry name --
+    strips anything that isn't alphanumeric/underscore/dash/dot, so a
+    sample_id containing "/", "..", or other path-like characters can't
+    affect where an extracting tool writes the file. The Run's own id is
+    still appended on top of this (see export_reports) for guaranteed
+    uniqueness -- this sanitization is purely about the entry name being
+    well-formed, not about disambiguating same-named samples."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", value) or "run"
+
+
+@router.get("/reports/export")
+def export_reports(
+    run_ids: Optional[List[str]] = Query(
+        None,
+        description="Specific run ids to export ('export selected'). Omit entirely "
+        "to export every one of the caller's Runs that has a completed report "
+        "('export all').",
+    ),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Bulk PDF report download as a single ZIP -- GET /runs/{id}/report
+    (above) only ever streams one report at a time, so a reports screen
+    offering "export selected" or "export all" needs this instead. Not
+    in CLAUDE.md's original API shape, a direct answer to the punch-list
+    item asking for it.
+
+    Scoped exactly like GET /runs: an admin's "export all" (or an
+    explicit run_ids list) can include any user's Runs; anyone else's is
+    restricted to their own, silently -- a `run_ids` entry that doesn't
+    exist, isn't visible to the caller, or simply has no completed
+    report yet is quietly left out of the zip rather than failing the
+    whole export, the same "can't act on what isn't yours, without
+    saying why" spirit as _get_owned_run/_get_visible_run returning a
+    uniform 404 elsewhere. Only when *nothing at all* ends up
+    exportable does this return 404, rather than a technically-valid
+    but useless empty zip file.
+    """
+    query = db.query(Run)
+    if current_user.role != "admin":
+        query = query.filter(Run.owner_id == current_user.id)
+    if run_ids:
+        query = query.filter(Run.id.in_(run_ids))
+    runs = query.order_by(Run.created_at.desc()).all()
+
+    buffer = io.BytesIO()
+    included = 0
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for run in runs:
+            stage = (
+                db.query(Stage)
+                .filter(
+                    Stage.run_id == run.id,
+                    Stage.stage_type == "report",
+                    Stage.status == "completed",
+                )
+                .order_by(Stage.attempt_number.desc())
+                .first()
+            )
+            if stage is None:
+                continue
+            report_path = FilePath((stage.output or {}).get("report_path", ""))
+            if not report_path.is_file():
+                continue
+            # Sample id for a human-readable name, the Run's own id
+            # appended for guaranteed uniqueness (two Runs can share a
+            # sample_id; ids never collide).
+            entry_name = f"{_safe_zip_entry_component(run.sample_id)}__{run.id}.pdf"
+            archive.write(report_path, arcname=entry_name)
+            included += 1
+
+    if included == 0:
+        raise HTTPException(
+            status_code=404,
+            detail="No matching reports were found to export.",
+        )
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="paigs_reports.zip"'},
+    )
 
 
 @router.get("/{run_id}", response_model=RunDetail)

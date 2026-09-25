@@ -170,3 +170,17 @@ instead of just trusting a number. Scoped and gated exactly like
 `GET /runs/{run_id}/stages/{type}`: any authenticated user for their own Runs,
 an admin for any user's. 404 if that slot was never uploaded for the Run, 422
 for any `slot` other than `forward`/`reverse`.
+
+## Bulk report export
+
+`GET /runs/reports/export` -- every completed report as a single ZIP, since
+`GET /runs/{id}/report` only ever streams one at a time. Two modes: omit `run_ids`
+entirely for "export all" (every one of the caller's Runs with a completed report),
+or pass one or more `?run_ids=...` for "export selected". Scoped like `GET /runs`:
+an admin's export can span every user's Runs, anyone else's only their own. A
+requested run id that doesn't exist, isn't visible to the caller, or has no
+completed report yet is silently left out rather than failing the whole export;
+only when nothing at all is exportable does this return 404 instead of a
+technically-valid but empty ZIP. Each entry inside the ZIP is named
+`{sample_id}__{run_id}.pdf` -- the run id keeps entries unique even when two Runs
+share a `sample_id`.

@@ -1521,6 +1521,42 @@
 					]
 				},
 				{
+					"name": "Bulk export reports (ZIP)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/runs/reports/export",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"runs",
+								"reports",
+								"export"
+							]
+						},
+						"description": "GET /runs/reports/export -- every one of this identity's completed reports as a single ZIP (omit run_ids for 'export all'; pass one or more ?run_ids=... for 'export selected'). Run after the full-completion run above so there's at least one completed report to export."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', () => pm.response.to.have.status(200));",
+									"pm.test('is a zip file', () => {",
+									"  pm.expect(pm.response.headers.get('Content-Type')).to.eql('application/zip');",
+									"  pm.expect(pm.response.headers.get('Content-Disposition')).to.include('.zip');",
+									"  pm.expect(pm.response.responseSize).to.be.above(0);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
 					"name": "Get run detail - all 12 stages present",
 					"request": {
 						"method": "GET",
