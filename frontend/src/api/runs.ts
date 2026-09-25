@@ -73,8 +73,14 @@ export async function getChromatogram(runId: string, slot: "forward" | "reverse"
   return data
 }
 
-export function getReportUrl(runId: string) {
-  return `/runs/${runId}/report`
+// The report endpoint requires the same bearer auth as everything else, so
+// a plain <a href> can't hit it directly -- fetch the bytes and hand the
+// caller a Blob to save (see src/lib/download.ts).
+export async function downloadReportBlob(runId: string) {
+  const { data } = await apiClient.get(`/runs/${runId}/report`, {
+    responseType: "blob",
+  })
+  return data as Blob
 }
 
 export async function renameRun(runId: string, sampleId: string) {

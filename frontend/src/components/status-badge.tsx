@@ -4,10 +4,11 @@ import {
   CircleDashed,
   Info,
   Loader2,
+  PauseCircle,
   XCircle,
 } from "lucide-react"
 import { cn } from "cn"
-import type { StageStatus } from "@/types/api"
+import type { RunStatus, StageStatus } from "@/types/api"
 
 // Two distinct axes (DESIGN.md "Stage status & badge system"): Stage.status
 // is *execution* state (did the step run), rendered on the stepper icon.
@@ -59,6 +60,52 @@ export function StageStatusBadge({ status }: { readonly status: StageStatus }) {
       )}
     >
       <Icon className={cn("size-3.5", status === "running" && "animate-spin")} />
+      {config.label}
+    </span>
+  )
+}
+
+// A run's overall execution status -- distinct from any single stage's:
+// "completed" here means the pipeline ran to its natural end (which may
+// still be a biological FAIL/REVIEW REQUIRED), "failed" means a hard stop.
+const RUN_STATUS_CONFIG: Record<
+  RunStatus,
+  { label: string; icon: typeof Circle; className: string }
+> = {
+  in_progress: {
+    label: "In Progress",
+    icon: Loader2,
+    className: "text-primary border-primary/40",
+  },
+  paused: {
+    label: "Paused",
+    icon: PauseCircle,
+    className: "text-muted-foreground border-border",
+  },
+  completed: {
+    label: "Completed",
+    icon: CheckCircle2,
+    className: "text-status-good border-status-good/40",
+  },
+  failed: {
+    label: "Failed",
+    icon: XCircle,
+    className: "text-status-critical border-status-critical/40",
+  },
+}
+
+export function RunStatusBadge({ status }: { readonly status: RunStatus }) {
+  const config = RUN_STATUS_CONFIG[status]
+  const Icon = config.icon
+
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-sm font-medium",
+        config.className
+      )}
+    >
+      <Icon className={cn("size-4", status === "in_progress" && "animate-spin")} />
       {config.label}
     </span>
   )
