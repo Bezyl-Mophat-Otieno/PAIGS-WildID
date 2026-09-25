@@ -16,11 +16,12 @@ names a background-job version as a later step -- not built here, since
 it would mean adding job-queue infrastructure this app doesn't have
 anywhere yet, well beyond what was asked.
 
-No access control on these routes -- same as every other endpoint in
-this codebase right now (there's no auth anywhere yet, and CLAUDE.md
-doesn't call for any). Worth flagging plainly rather than leaving
-implicit: this endpoint is more sensitive than most, since publishing a
-new version changes what every future Run's Stage 9 search sees.
+GET /versions and GET /active require only an authenticated caller (any
+role) -- an analyst needs to see which reference database is active
+when interpreting a run. POST /publish is admin-only: publishing a new
+version changes what every future Run's Stage 9 search sees for every
+user, not just the caller's own, not merely something scoped to the
+caller the way a Run is.
 """
 import shutil
 import tempfile
@@ -30,8 +31,10 @@ from typing import List
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
+from app.auth.dependencies import get_current_user, require_admin
 from app.db import get_db
 from app.models.reference import ReferenceDatabaseVersion
+from app.models.user import User
 from app.reference.publish import InvalidReferenceFastaError, get_active_version, publish_reference_db
 from app.schemas.reference import PublishResult, ReferenceDatabaseVersionRead
 
@@ -45,6 +48,7 @@ def publish(
     fasta: UploadFile = File(...),
     version: str = Form(...),
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
 ):
     """
     Publish a new reference database version from an uploaded curated
@@ -81,7 +85,7 @@ def publish(
 
 
 @router.get("/versions", response_model=List[ReferenceDatabaseVersionRead])
-def list_versions(db: Session = Depends(get_db)):
+def list_versions(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     return (
         db.query(ReferenceDatabaseVersion)
         .order_by(ReferenceDatabaseVersion.published_at.desc())
@@ -90,7 +94,7 @@ def list_versions(db: Session = Depends(get_db)):
 
 
 @router.get("/active", response_model=ReferenceDatabaseVersionRead)
-def active_version(db: Session = Depends(get_db)):
+def active_version(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     active = get_active_version(db)
     if active is None:
         raise HTTPException(

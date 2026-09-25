@@ -10,11 +10,12 @@ tests/test_reference_publish.py already exercise directly -- these tests
 cover the HTTP layer (upload handling, status codes, response shapes),
 not the publish logic itself again.
 
-No auth: same as every other endpoint in this app today (there's no auth
-anywhere in the codebase yet, and CLAUDE.md doesn't mention any). Flagged
-in claude/reference-database-setup-status.md as a known gap worth
-revisiting before real deployment, given this endpoint is more sensitive
-than most -- it changes what every future Run's Stage 9 search sees.
+GET /versions and GET /active are open to any authenticated user (an
+analyst needs to see which reference database is active). POST /publish
+is admin-only -- publishing a new version changes what every future
+Run's Stage 9 search sees for every user, not just the caller's own, the
+same reasoning that makes PUT /config/{id} admin-only (see
+tests/test_api_config.py).
 """
 from pathlib import Path
 
@@ -112,3 +113,30 @@ class TestActiveVersionEndpoint:
         response = client.get("/reference-database/active")
 
         assert response.json()["version"] == "v2"
+
+
+class TestReferenceDatabaseRequiresAuthentication:
+    def test_publish_requires_a_token(self, anon_client, temp_reference_data_root):
+        response = _publish(anon_client, "v1")
+        assert response.status_code == 401
+
+    def test_list_versions_requires_a_token(self, anon_client, temp_reference_data_root):
+        response = anon_client.get("/reference-database/versions")
+        assert response.status_code == 401
+
+    def test_active_version_requires_a_token(self, anon_client, temp_reference_data_root):
+        response = anon_client.get("/reference-database/active")
+        assert response.status_code == 401
+
+    def test_an_analyst_can_list_versions(self, analyst_client, temp_reference_data_root):
+        response = analyst_client.get("/reference-database/versions")
+        assert response.status_code == 200
+
+    def test_an_analyst_can_read_the_active_version(self, client, analyst_client, temp_reference_data_root):
+        _publish(client, "v1")
+        response = analyst_client.get("/reference-database/active")
+        assert response.status_code == 200
+
+    def test_an_analyst_cannot_publish(self, analyst_client, temp_reference_data_root):
+        response = _publish(analyst_client, "v1")
+        assert response.status_code == 403

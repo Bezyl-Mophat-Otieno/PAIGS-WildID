@@ -1,4 +1,11 @@
-"""GET/PUT /config -- HTTP-level tests."""
+"""GET/PUT /config -- HTTP-level tests.
+
+GET is open to any authenticated user (an analyst needs to see current
+thresholds when creating a run); PUT is admin-only -- a global threshold
+change affects every future Run for every user, not just the caller's
+own, the same reasoning that makes POST /reference-database/publish
+admin-only (see tests/test_api_reference.py).
+"""
 from app.configuration.catalog import CATALOG
 
 
@@ -50,3 +57,28 @@ class TestUpdateConfig:
         resp = client.put(f"/config/{row['id']}", json={"value": 5.0})
 
         assert resp.status_code == 422
+
+
+class TestConfigRequiresAuthentication:
+    def test_list_config_requires_a_token(self, anon_client):
+        resp = anon_client.get("/config")
+
+        assert resp.status_code == 401
+
+    def test_update_config_requires_a_token(self, anon_client):
+        resp = anon_client.put("/config/some-id", json={"value": 1})
+
+        assert resp.status_code == 401
+
+    def test_an_analyst_can_read_config(self, analyst_client):
+        resp = analyst_client.get("/config")
+
+        assert resp.status_code == 200
+
+    def test_an_analyst_cannot_update_config(self, client, analyst_client):
+        rows = client.get("/config").json()
+        row = rows[0]
+
+        resp = analyst_client.put(f"/config/{row['id']}", json={"value": row["value"]})
+
+        assert resp.status_code == 403

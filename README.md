@@ -109,6 +109,26 @@ whoever creates or reruns a Run (admin or analyst -- role doesn't matter for thi
 the only one who can see or act on it, for now -- an admin's own `GET /runs` is
 restricted to their own Runs exactly like an analyst's. Giving admin cross-tenant
 visibility (seeing everyone's runs and analyses) is a deliberate later step, flagged
-but not built. `/config` and `/reference-database` are **not** yet gated behind a
-login -- those are global/admin-domain settings, not per-user data, and were left
-alone in this pass.
+but not built.
+
+`/config` and `/reference-database` are gated too, with a role split rather than
+plain "any token will do": `GET /config`, `GET /reference-database/versions`, and
+`GET /reference-database/active` accept any authenticated user (an analyst needs to
+read current thresholds and the active reference database while working), while
+`PUT /config/{id}` and `POST /reference-database/publish` are admin-only -- both
+change global state that affects every future Run for every user, not just the
+caller's own, unlike a Run itself which is owned by a single user.
+
+### CORS
+
+`CORSMiddleware` is enabled so a frontend on a different origin (e.g. a Vite dev
+server at `http://localhost:5173`) can call this API at all -- without it, browsers
+block cross-origin requests outright. Allowed origins are env-configurable:
+
+```bash
+export PAIGS_CORS_ORIGINS="http://localhost:5173,https://app.example.com"
+# falls back to "*" (all origins) if unset -- fine for local prototyping
+```
+
+`allow_credentials` is `False`, which is safe even with a wildcard origin, since auth
+here is a bearer token in the `Authorization` header, not a cookie.
