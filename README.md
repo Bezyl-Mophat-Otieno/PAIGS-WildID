@@ -136,3 +136,26 @@ export PAIGS_CORS_ORIGINS="http://localhost:5173,https://app.example.com"
 
 `allow_credentials` is `False`, which is safe even with a wildcard origin, since auth
 here is a bearer token in the `Authorization` header, not a cookie.
+
+## Dashboard stats
+
+`GET /dashboard/stats` -- aggregate numbers a UI needs that the raw `GET /runs` list
+doesn't provide on its own: total samples processed, identification rate, QC pass
+rate, pending-review count, a species breakdown, and a quality-score histogram.
+Requires only an authenticated caller (any role), and is scoped exactly like
+`GET /runs`: an admin's numbers cover every user's Runs; anyone else's cover only
+their own.
+
+Every number is derived from data the pipeline already records on each Run's
+Stages -- nothing new is tracked. In particular: "total samples processed" counts
+Runs that have actually been executed (`status != "in_progress"`), not merely
+uploaded; "identification rate" and "QC pass rate" are each out of the Runs that
+actually reached that stage (Stage 10 / Stage 7 respectively), not out of every Run,
+since many Runs stop earlier in the pipeline for unrelated reasons (a bad file, an
+unusable consensus, etc.); "pending-review count" and the species breakdown use
+Stage 10's own PASS / AMBIGUOUS / REVIEW REQUIRED vocabulary directly (only PASS
+counts toward the species breakdown); the quality-score histogram buckets Stage 7's
+`mean_quality` against this app's own existing quality conventions (the Q20 trim
+floor, the Q25 usability floor) rather than arbitrary round numbers. See
+`app/dashboard/stats.py`'s module docstring for the full reasoning behind each
+formula.

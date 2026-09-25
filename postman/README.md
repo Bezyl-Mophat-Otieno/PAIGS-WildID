@@ -67,3 +67,14 @@ first request ("Admin login (seeded default account)") logs in as the
 seeded default admin and captures `admin_token`. Every other folder's
 requests depend on it being set, the same way "Happy path" needs to run
 before requests that reuse `run_id`.
+
+## Dashboard (added 2026-09-25)
+
+The **Dashboard** folder's one request, "Get dashboard stats", hits
+`GET /dashboard/stats` -- aggregate counts/rates derived from every run's
+stages (see the backend README's own note, and
+`claude/dashboard-stats-status.md` in the project docs, for exactly how each
+number is computed). Run it **last**, after the other folders have created
+some runs, so there's real data to aggregate; its test script checks the
+response's shape rather than exact numbers, since those depend on which
+other folders ran first.
