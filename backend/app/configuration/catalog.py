@@ -70,114 +70,103 @@ CATALOG = [
     _entry(
         "sanity_check", "max_n_proportion", DEFAULT_MAX_N_PROPORTION,
         "Max N-proportion tolerated",
-        "Stage 3 (Coarse Sanity Check): a read whose proportion of N "
-        "(unresolved) bases exceeds this is treated as containing no real "
-        "signal. Deliberately lenient -- catches only genuinely broken "
-        "reads, not normal noisy edges (the real accept/reject gate is "
-        "Stage 7's max_ambiguous_proportion).",
+        "Reads with more N calls than this fraction are rejected outright "
+        "as unreadable. A coarse filter only -- overall sequence quality "
+        "is enforced later, at the usability check.",
         (0.0, 1.0),
     ),
     _entry(
         "sanity_check", "min_raw_length", DEFAULT_MIN_RAW_LENGTH,
         "Min raw length (bp)",
-        "Stage 3: an absurdly-low floor below which a read is essentially "
-        "content-free, regardless of quality. Not a real usability bar -- "
-        "see Stage 7's own min_length for that.",
+        "Reads shorter than this are rejected as too short to contain any "
+        "usable sequence. A coarse floor, not the real length "
+        "requirement -- that's set separately at the usability check.",
         (0, None),
     ),
     _entry(
         "trim", "quality_threshold", DEFAULT_QUALITY_THRESHOLD,
         "Trim quality threshold (Phred)",
-        "Stage 4 (Trimming): the per-base Phred score below which a base "
-        "is considered unreliable when finding each read's trustworthy "
-        "window. Q20 is the standard Sanger-sequencing minimum-acceptable "
-        "convention.",
+        "Per-base Phred score below which a base is treated as unreliable "
+        "when locating each read's trustworthy window. Q20 is the "
+        "standard minimum for Sanger sequencing.",
         (0, None),
     ),
     _entry(
         "trim", "min_window_size", DEFAULT_MIN_WINDOW_SIZE,
         "Min trim window size (bp)",
-        "Stage 4: below this, a read's reliable window is treated as "
-        "nothing worth keeping at all.",
+        "If the reliable window found during trimming is shorter than "
+        "this, the read is discarded -- there's nothing worth keeping.",
         (0, None),
     ),
     _entry(
         "orientation", "min_overlap_length", DEFAULT_MIN_OVERLAP_LENGTH,
         "Min overlap length (bp)",
-        "Stage 5 (Orientation Detection): the shortest forward/reverse "
-        "alignment overlap treated as a real signal rather than a chance "
-        "collision.",
+        "Shortest forward/reverse overlap that counts as a genuine "
+        "alignment rather than a chance match.",
         (0, None),
     ),
     _entry(
         "orientation", "min_identity", DEFAULT_MIN_IDENTITY,
         "Min overlap identity",
-        "Stage 5: the minimum fraction of matching bases within the "
-        "overlap region for it to count as a genuine forward/reverse pair "
-        "rather than a spurious partial match.",
+        "Minimum fraction of matching bases within the overlap for the "
+        "two reads to be accepted as a genuine forward/reverse pair.",
         (0.0, 1.0),
     ),
     _entry(
         "usability_check", "min_length", DEFAULT_MIN_LENGTH,
         "Min final length (bp)",
-        "Stage 7 (Usability Check), the real accept/reject gate: minimum "
-        "length of the cleaned-up sequence (consensus or single trimmed "
-        "read) for it to be considered trustworthy enough to search. "
-        "500bp matches the standard full-length COI barcode convention "
-        "and the FDA SLV fish-barcoding protocol's own floor.",
+        "Minimum length of the cleaned-up sequence (consensus or single "
+        "trimmed read) required before it's searched. 500bp matches the "
+        "standard full-length COI barcode and the FDA's fish-barcoding "
+        "protocol.",
         (0, None),
     ),
     _entry(
         "usability_check", "min_mean_quality", DEFAULT_MIN_MEAN_QUALITY,
         "Min mean quality (Phred)",
-        "Stage 7: minimum mean Phred score across the final sequence, set "
-        "above Stage 4's own Q20 trim bar since everything reaching here "
-        "already cleared that.",
+        "Minimum mean Phred score across the final sequence, set above "
+        "the Q20 trim threshold since every base reaching this point has "
+        "already cleared that bar.",
         (0, None),
     ),
     _entry(
         "usability_check", "max_ambiguous_proportion", DEFAULT_MAX_AMBIGUOUS_PROPORTION,
         "Max ambiguous proportion",
-        "Stage 7: maximum proportion of unresolved ambiguous positions "
-        "allowed in the final sequence (two-read/consensus path only). "
-        "Directly from the FDA SLV protocol's '<2% ambiguous bases' "
-        "cutoff.",
+        "Maximum proportion of unresolved ambiguous positions allowed in "
+        "the final consensus sequence. Matches the FDA's fish-barcoding "
+        "protocol cutoff of under 2% ambiguous bases.",
         (0.0, 1.0),
     ),
     _entry(
         "blast", "max_hits", DEFAULT_MAX_HITS,
         "Max BLAST hits returned",
-        "Stage 9 (BLAST comparison): how many ranked candidate hits Stage "
-        "10 gets to evaluate (and an analyst ultimately sees in the "
-        "report). An engineering judgment call, not a biological "
-        "threshold -- worth revisiting once the real reference database's "
-        "size/diversity is known.",
+        "Number of top-ranked BLAST hits kept for identification and "
+        "shown in the report. Not a biological cutoff -- just how many "
+        "candidates get evaluated.",
         (1, None),
     ),
     _entry(
         "identification", "min_identity_pct", DEFAULT_MIN_IDENTITY_PCT,
         "Min identity % (PASS)",
-        "Stage 10 (Identification): minimum top-hit identity percent "
-        "required for a PASS. 98% matches the FDA SLV protocol's "
-        "generalized 2%-divergence cutoff for species delimitation via "
-        "COI.",
+        "Minimum percent identity the top BLAST hit must reach for a "
+        "PASS. 98% follows the standard 2% divergence cutoff used for "
+        "COI-based species identification.",
         (0.0, 100.0),
     ),
     _entry(
         "identification", "min_coverage_pct", DEFAULT_MIN_COVERAGE_PCT,
         "Min coverage % (PASS)",
-        "Stage 10: minimum percent of the query sequence actually "
-        "included in the alignment, required alongside identity so a "
-        "short, high-identity alignment can't pass on its own.",
+        "Minimum percent of the query sequence that must be covered by "
+        "the alignment. Required alongside identity so a short, "
+        "high-identity match can't pass on its own.",
         (0.0, 100.0),
     ),
     _entry(
         "identification", "ambiguous_margin_pct", DEFAULT_AMBIGUOUS_MARGIN_PCT,
         "Ambiguous margin (identity points)",
-        "Stage 10: how many identity points the top hit must lead the "
-        "runner-up by to be called clear, rather than AMBIGUOUS -- "
-        "CLAUDE.md's own 'no other candidate is close' language, "
-        "translated into a number.",
+        "How many identity points the top hit must lead the next-best "
+        "candidate by before the result is called clear rather than "
+        "ambiguous.",
         (0.0, 100.0),
     ),
 ]

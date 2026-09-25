@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { ChevronDown } from "lucide-react"
-import type { Control, FieldValues, Path } from "react-hook-form"
+import { useFormState, type Control, type FieldValues, type Path } from "react-hook-form"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { ThresholdField } from "@/components/new-analysis/threshold-field"
@@ -21,11 +21,25 @@ export function ConfigOverridesSection<
   const [open, setOpen] = useState(false)
   const groups = groupConfigByStage(items)
 
+  // Visible whether or not the section is expanded -- so it's clear a real,
+  // fetched default set is already in effect even before anyone opens this,
+  // not just once they've gone looking for it.
+  const { dirtyFields } = useFormState({ control })
+  const dirtyThresholds = (dirtyFields as { thresholds?: Record<string, boolean> }).thresholds
+  const modifiedCount = Object.keys(dirtyThresholds ?? {}).length
+  const summary =
+    modifiedCount === 0
+      ? `Using ${items.length} default thresholds`
+      : `${modifiedCount} of ${items.length} thresholds modified`
+
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="border-border rounded-lg border">
-      <CollapsibleTrigger className="flex w-full items-center justify-between px-4 py-3 text-sm font-medium">
-        Advanced -- Threshold Overrides
-        <ChevronDown className={cn("size-4 transition-transform", open && "rotate-180")} />
+      <CollapsibleTrigger className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-medium">
+        <span>
+          Thresholds
+          <span className="text-muted-foreground block text-xs font-normal">{summary}</span>
+        </span>
+        <ChevronDown className={cn("size-4 shrink-0 transition-transform", open && "rotate-180")} />
       </CollapsibleTrigger>
       <CollapsibleContent className="border-border border-t px-4 py-2">
         <Accordion type="multiple" className="w-full">
