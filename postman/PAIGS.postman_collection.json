@@ -814,6 +814,82 @@
 					]
 				},
 				{
+					"name": "Get chromatogram (forward)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/runs/{{run_id}}/chromatogram/forward",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"runs",
+								"{{run_id}}",
+								"chromatogram",
+								"forward"
+							]
+						},
+						"description": "GET /runs/{{run_id}}/chromatogram/forward -- the raw AB1 fluorescence trace and per-base peak locations for the 'forward' read of the two-file run created above (nothing computed, straight out of the file's own ABIF tags). Lets an analyst visually double-check a flagged or low-confidence base call."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', () => pm.response.to.have.status(200));",
+									"const body = pm.response.json();",
+									"pm.test('has the expected shape', () => {",
+									"  pm.expect(body.channel_order).to.have.lengthOf(4);",
+									"  pm.expect(body.num_samples).to.be.above(0);",
+									"  pm.expect(body.peak_locations.length).to.eql(body.base_calls.length);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
+					"name": "Get chromatogram (reverse)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/runs/{{run_id}}/chromatogram/reverse",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"runs",
+								"{{run_id}}",
+								"chromatogram",
+								"reverse"
+							]
+						},
+						"description": "GET /runs/{{run_id}}/chromatogram/reverse -- the raw AB1 fluorescence trace and per-base peak locations for the 'reverse' read of the two-file run created above (nothing computed, straight out of the file's own ABIF tags). Lets an analyst visually double-check a flagged or low-confidence base call."
+					},
+					"response": [],
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('status is 200', () => pm.response.to.have.status(200));",
+									"const body = pm.response.json();",
+									"pm.test('has the expected shape', () => {",
+									"  pm.expect(body.channel_order).to.have.lengthOf(4);",
+									"  pm.expect(body.num_samples).to.be.above(0);",
+									"  pm.expect(body.peak_locations.length).to.eql(body.base_calls.length);",
+									"});"
+								]
+							}
+						}
+					]
+				},
+				{
 					"name": "Rename run (PATCH)",
 					"request": {
 						"method": "PATCH",

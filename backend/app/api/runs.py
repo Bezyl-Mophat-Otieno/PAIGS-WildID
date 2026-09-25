@@ -18,6 +18,8 @@ from app.models.user import User
 from app.naming import default_sample_id
 from app.orchestration.execute import RunAlreadyExecutedError, RunNotFoundError, execute_run
 from app.orchestration.rerun import create_rerun
+from app.pipeline.chromatogram import extract_chromatogram
+from app.schemas.chromatogram import ChromatogramResult
 from app.schemas.run import RerunRequest, RunDetail, RunPatch, RunRead, StageDetail
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -97,6 +99,31 @@ def _get_visible_run(run_id: str, current_user: User, db: Session) -> Run:
     if run.owner_id != current_user.id and current_user.role != "admin":
         raise HTTPException(status_code=404, detail="Run not found.")
     return run
+
+
+def _resolve_slot_path(run: Run, slot: str, db: Session) -> FilePath:
+    """Finds the stored AB1 file for one of this Run's upload slots
+    ("forward" or "reverse"), the same way
+    app.orchestration.execute._resolve_file_paths does for orchestration
+    itself -- reads Stage 0 (Import)'s own recorded slots/stored_filenames
+    rather than guessing a filename. Raises 404 (not the caller's
+    problem to distinguish from "run not found") when this Run never had
+    that slot uploaded."""
+    import_stage = (
+        db.query(Stage)
+        .filter(Stage.run_id == run.id, Stage.stage_type == "import")
+        .order_by(Stage.attempt_number.desc())
+        .first()
+    )
+    output = (import_stage.output or {}) if import_stage else {}
+    slots = output.get("slots") or []
+    stored_filenames = output.get("stored_filenames") or []
+    mapping = dict(zip(slots, stored_filenames))
+    if slot not in mapping:
+        raise HTTPException(
+            status_code=404, detail=f"No '{slot}' read was uploaded for this run."
+        )
+    return storage.run_dir(run.id) / mapping[slot]
 
 
 @router.post("", response_model=RunRead, status_code=201)
@@ -315,6 +342,39 @@ def get_stage(
     if stage is None:
         raise HTTPException(status_code=404, detail=f"Stage '{stage_type}' has not been run yet.")
     return stage
+
+
+@router.get("/{run_id}/chromatogram/{slot}", response_model=ChromatogramResult)
+def get_chromatogram(
+    run_id: str,
+    slot: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Raw AB1 chromatogram/peak data for one of this Run's upload slots --
+    build-order item "expose the raw AB1 chromatogram/peak data ...
+    needed so an analyst can visually double-check a flagged or
+    low-confidence base call instead of just trusting a number." Not in
+    CLAUDE.md's original API shape (docs/PLAN.md's own "Chromatogram
+    viewer" future-frontend note already flagged that this needed a new
+    endpoint, since nothing served it before). Visibility rules match
+    every other read-only single-run endpoint here (_get_visible_run):
+    an admin can view any user's chromatogram, an analyst only their
+    own. Every stored AB1 file already has this data (it's part of the
+    ABIF format itself) -- this is pure extraction, nothing computed.
+    """
+    run = _get_visible_run(run_id, current_user, db)
+    if slot not in ("forward", "reverse"):
+        raise HTTPException(status_code=422, detail="slot must be 'forward' or 'reverse'.")
+
+    file_path = _resolve_slot_path(run, slot, db)
+    if not file_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Stored AB1 file for the '{slot}' slot is missing on disk.",
+        )
+    return extract_chromatogram(file_path)
 
 
 @router.get("/{run_id}/report")

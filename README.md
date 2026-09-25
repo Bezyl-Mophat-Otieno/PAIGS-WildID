@@ -159,3 +159,14 @@ counts toward the species breakdown); the quality-score histogram buckets Stage 
 floor, the Q25 usability floor) rather than arbitrary round numbers. See
 `app/dashboard/stats.py`'s module docstring for the full reasoning behind each
 formula.
+
+## Chromatogram / peak data
+
+`GET /runs/{run_id}/chromatogram/{slot}` (`slot` is `forward` or `reverse`) --
+the raw AB1 fluorescence trace and per-base peak locations for one of a Run's
+uploaded reads, straight out of the file's own ABIF tags (nothing computed).
+Lets an analyst visually double-check a flagged or low-confidence base call
+instead of just trusting a number. Scoped and gated exactly like
+`GET /runs/{run_id}/stages/{type}`: any authenticated user for their own Runs,
+an admin for any user's. 404 if that slot was never uploaded for the Run, 422
+for any `slot` other than `forward`/`reverse`.
