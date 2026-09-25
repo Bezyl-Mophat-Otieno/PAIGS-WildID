@@ -62,15 +62,39 @@ def _parse_config_overrides(raw: Optional[str]) -> Optional[dict]:
 
 def _get_owned_run(run_id: str, current_user: User, db: Session) -> Run:
     """Looks up a Run and confirms `current_user` owns it, in one step --
-    used by every endpoint below that acts on a specific run_id. Returns
-    404 (not 403) when the Run exists but belongs to someone else, same
-    as when it doesn't exist at all: a caller shouldn't be able to tell
-    the difference, and shouldn't be able to confirm another user's Run
-    even exists. See app.models.run.Run's owner_id docstring -- for now
-    this applies uniformly regardless of role; an admin's own view is
-    scoped exactly like an analyst's."""
+    used by every endpoint below that *acts on* a specific run_id
+    (execute, rerun, patch). Returns 404 (not 403) when the Run exists
+    but belongs to someone else, same as when it doesn't exist at all: a
+    caller shouldn't be able to tell the difference, and shouldn't be
+    able to confirm another user's Run even exists. Strict owner-only
+    even for an admin -- see _get_visible_run's docstring for why the
+    two are deliberately different."""
     run = db.get(Run, run_id)
     if run is None or run.owner_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    return run
+
+
+def _get_visible_run(run_id: str, current_user: User, db: Session) -> Run:
+    """Like _get_owned_run, but an admin may also *view* (never act on)
+    any user's Run -- the cross-tenant visibility the user asked for:
+    "we will expand the admin to see all the runs and analysis of
+    everyone." Used only by the read-only endpoints: GET /runs/{id},
+    GET /runs/{id}/stages/{type}, GET /runs/{id}/report. Still 404 (not
+    403) for anyone who can't see the Run, admin or not -- same
+    can't-confirm-existence reasoning as _get_owned_run.
+
+    Deliberately not used by execute/rerun/patch: "see all the runs and
+    analysis of everyone" is a request to view everyone's work, not a
+    request to let an admin mutate another user's data on their behalf
+    -- especially with this pipeline headed toward forensic/evidentiary
+    use, where a silent cross-user mutation would undermine the audit
+    trail. Those three endpoints keep using _get_owned_run, so an admin
+    is scoped exactly like an analyst for anything that writes."""
+    run = db.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    if run.owner_id != current_user.id and current_user.role != "admin":
         raise HTTPException(status_code=404, detail="Run not found.")
     return run
 
@@ -252,14 +276,13 @@ def rerun_run(
 
 @router.get("", response_model=List[RunRead])
 def list_runs(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Only the caller's own Runs -- see app.models.run.Run's owner_id
-    docstring. An admin sees only their own Runs here too, for now."""
-    return (
-        db.query(Run)
-        .filter(Run.owner_id == current_user.id)
-        .order_by(Run.created_at.desc())
-        .all()
-    )
+    """An admin sees every user's Runs; anyone else sees only their own
+    -- see _get_visible_run's docstring for the same rule applied to a
+    single Run."""
+    query = db.query(Run)
+    if current_user.role != "admin":
+        query = query.filter(Run.owner_id == current_user.id)
+    return query.order_by(Run.created_at.desc()).all()
 
 
 @router.get("/{run_id}", response_model=RunDetail)
@@ -268,7 +291,7 @@ def get_run(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return _get_owned_run(run_id, current_user, db)
+    return _get_visible_run(run_id, current_user, db)
 
 
 @router.get("/{run_id}/stages/{stage_type}", response_model=StageDetail)
@@ -278,7 +301,7 @@ def get_stage(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _get_owned_run(run_id, current_user, db)
+    _get_visible_run(run_id, current_user, db)
 
     if stage_type not in STAGE_TYPES:
         raise HTTPException(status_code=422, detail=f"Unknown stage_type '{stage_type}'.")
@@ -315,7 +338,7 @@ def download_report(
     metadata vs. a PDF file) for different callers (an inspector UI vs.
     a literal file download).
     """
-    run = _get_owned_run(run_id, current_user, db)
+    run = _get_visible_run(run_id, current_user, db)
 
     stage = (
         db.query(Stage)

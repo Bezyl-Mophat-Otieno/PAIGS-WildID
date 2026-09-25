@@ -106,10 +106,14 @@ a password) so an admin can confirm who's been invited.
 
 Every `/runs` endpoint now requires a bearer token, and Runs are scoped per owner:
 whoever creates or reruns a Run (admin or analyst -- role doesn't matter for this) is
-the only one who can see or act on it, for now -- an admin's own `GET /runs` is
-restricted to their own Runs exactly like an analyst's. Giving admin cross-tenant
-visibility (seeing everyone's runs and analyses) is a deliberate later step, flagged
-but not built.
+the only one who can *act on* it -- execute, rerun, patch. An admin additionally gets
+cross-tenant *visibility*: `GET /runs` (list), `GET /runs/{id}`, `GET /runs/{id}/stages/{type}`,
+and `GET /runs/{id}/report` show an admin every user's Runs, not just their own. An
+admin still cannot execute, rerun, or patch a Run they don't own -- that stays
+strictly owner-only, on purpose, since this pipeline is headed toward
+forensic/evidentiary use and a silent cross-user mutation would undermine the audit
+trail. An analyst's own view is unaffected either way: still scoped to just their own
+Runs.
 
 `/config` and `/reference-database` are gated too, with a role split rather than
 plain "any token will do": `GET /config`, `GET /reference-database/versions`, and

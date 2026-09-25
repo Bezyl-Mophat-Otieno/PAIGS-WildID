@@ -1,11 +1,18 @@
-"""Runs are scoped per-owner: whoever creates a Run (admin or analyst --
-role doesn't matter for this) is the only one who can see or act on it,
-for now. CLAUDE.md doesn't mention this -- it's a direct product
+"""Runs are scoped per-owner: whoever creates a Run is the only one who
+can *act on* it (execute/rerun/patch) -- admin or analyst, role doesn't
+matter for that. CLAUDE.md doesn't mention this -- it's a direct product
 decision: "all runs should be scoped to a tenant ... be it an admin or
-a mere analyst they should be able to view their work," with a
-deliberate note that giving admin cross-tenant visibility is a later
-step, not this one -- so today an admin's own view of /runs is scoped
-exactly like an analyst's.
+a mere analyst they should be able to view their work."
+
+The admin-cross-tenant-*visibility* step flagged here as deliberately
+deferred has since been built -- see
+tests/test_api_runs_admin_visibility.py: an admin can now *see* (list,
+view detail/stages/report for) any user's Run, but still cannot act on
+one they don't own. The tests below that assert an analyst can't see an
+admin's Run are unaffected (that direction never changes); the one
+assertion that used to also claim the reverse -- an admin's list
+excluding an analyst's Runs -- has moved to the admin-visibility test
+file, since that's no longer this app's behavior.
 
 Uses the `analyst_client` / `anon_client` fixtures (tests/conftest.py) --
 `client` is already authenticated as the seeded default admin.
@@ -50,19 +57,18 @@ class TestOwnership:
 
         assert run["owner_id"] == me["id"]
 
-    def test_list_runs_only_returns_the_callers_own_runs(self, client, analyst_client, fixtures_dir):
+    def test_list_runs_an_analyst_only_sees_their_own_runs(self, client, analyst_client, fixtures_dir):
         admin_run = _create_run(client, fixtures_dir, "3100.ab1")
         analyst_run = _create_run(analyst_client, fixtures_dir, "3730.ab1")
 
-        admin_view = client.get("/runs").json()
         analyst_view = analyst_client.get("/runs").json()
 
-        admin_ids = {r["id"] for r in admin_view}
         analyst_ids = {r["id"] for r in analyst_view}
-        assert admin_run["id"] in admin_ids
-        assert analyst_run["id"] not in admin_ids
         assert analyst_run["id"] in analyst_ids
         assert admin_run["id"] not in analyst_ids
+        # An admin's list DOES include this analyst's run -- that's the
+        # deliberate cross-tenant visibility change, covered in
+        # tests/test_api_runs_admin_visibility.py, not asserted here.
 
     def test_get_run_on_someone_elses_run_is_404_not_403(self, client, analyst_client, fixtures_dir):
         admin_run = _create_run(client, fixtures_dir)
