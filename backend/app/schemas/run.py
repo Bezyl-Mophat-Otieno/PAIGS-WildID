@@ -41,6 +41,11 @@ class RunRead(BaseModel):
     # The User who created (or reran) this Run -- see app.models.run.Run's
     # own docstring on owner_id for the current per-owner scoping rule.
     owner_id: str
+    # This Run's completed identification stage's verdict ("PASS" |
+    # "AMBIGUOUS" | "REVIEW REQUIRED"), or null if Stage 10 hasn't
+    # completed yet. Mirrors app.dashboard.stats's own join, so a Run
+    # listing's outcome stays consistent with the Dashboard's counts.
+    identification_status: Optional[str] = None
 
 
 class RunDetail(RunRead):

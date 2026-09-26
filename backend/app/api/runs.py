@@ -312,7 +312,32 @@ def list_runs(current_user: User = Depends(get_current_user), db: Session = Depe
     query = db.query(Run)
     if current_user.role != "admin":
         query = query.filter(Run.owner_id == current_user.id)
-    return query.order_by(Run.created_at.desc()).all()
+    runs = query.order_by(Run.created_at.desc()).all()
+
+    run_ids = [run.id for run in runs]
+    identification_status_by_run = {}
+    if run_ids:
+        identification_stages = (
+            db.query(Stage)
+            .filter(
+                Stage.run_id.in_(run_ids),
+                Stage.stage_type == "identification",
+                Stage.status == "completed",
+            )
+            .all()
+        )
+        for stage in identification_stages:
+            output = stage.output or {}
+            status = output.get("status")
+            if status:
+                identification_status_by_run[stage.run_id] = status
+
+    return [
+        RunRead.model_validate(run).model_copy(
+            update={"identification_status": identification_status_by_run.get(run.id)}
+        )
+        for run in runs
+    ]
 
 
 def _safe_zip_entry_component(value: str) -> str:

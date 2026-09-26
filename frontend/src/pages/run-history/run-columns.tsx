@@ -1,5 +1,5 @@
 import { createColumnHelper } from "@tanstack/react-table"
-import { RunStatusBadge } from "@/components/status-badge"
+import { RunStatusBadge, VerdictBadge } from "@/components/status-badge"
 import { STAGE_LABELS } from "@/lib/stages"
 import { tableFeatureSet } from "@/lib/table-features"
 import type { Run, User } from "@/types/api"
@@ -22,6 +22,17 @@ export function buildRunColumns(options: {
     columnHelper.accessor("status", {
       header: "Status",
       cell: (info) => <RunStatusBadge status={info.getValue()} />,
+    }),
+    columnHelper.accessor("identification_status", {
+      header: "Outcome",
+      cell: (info) => {
+        const verdict = info.getValue()
+        return verdict ? (
+          <VerdictBadge verdict={verdict} />
+        ) : (
+          <span className="text-muted-foreground text-xs">{"–"}</span>
+        )
+      },
     }),
     columnHelper.accessor("current_stage", {
       header: "Current stage",

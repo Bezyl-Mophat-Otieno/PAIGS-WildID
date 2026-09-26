@@ -59,6 +59,7 @@ export function DashboardPage() {
             label="Pending review"
             value={stats.pending_review_count}
             icon={<AlertTriangle className="size-5" />}
+            href="/runs?outcome=review_required"
           />
         </div>
       )}

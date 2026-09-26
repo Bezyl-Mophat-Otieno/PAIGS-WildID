@@ -180,11 +180,13 @@ export interface BlastMetadata {
   thresholds: { max_hits: number }
 }
 
+export type IdentificationStatus = "PASS" | "AMBIGUOUS" | "REVIEW REQUIRED"
+
 export interface IdentificationOutput {
   candidate_species: string | null
   identity: number | null
   coverage: number | null
-  status: "PASS" | "AMBIGUOUS" | "REVIEW REQUIRED"
+  status: IdentificationStatus
   reason: string | null
   thresholds_applied: {
     min_identity_pct: number
@@ -214,6 +216,9 @@ export interface Run {
   status: RunStatus
   rerun_of: string | null
   config_overrides: Record<string, number> | null
+  // Null until this run's identification stage has completed (still
+  // running, or stopped at an earlier hard gate).
+  identification_status: IdentificationStatus | null
 }
 
 // Returned by GET /runs/{id} and POST /runs/{id}/execute -- a Run plus its

@@ -199,6 +199,50 @@ class TestListAndGetRun:
         ids = [r["id"] for r in resp.json()]
         assert created["id"] in ids
 
+    def test_list_runs_identification_status_is_null_before_execute(
+        self, client, fixtures_dir
+    ):
+        created = self._create_two_file_run(client, fixtures_dir)
+
+        resp = client.get("/runs")
+
+        listed = next(r for r in resp.json() if r["id"] == created["id"])
+        assert listed["identification_status"] is None
+
+    def test_list_runs_identification_status_reflects_completed_verdict(
+        self, client, fixtures_dir
+    ):
+        trimmed_3100 = (
+            "AGCGATTCCAGCTTCATATAGTCGAGTTGCAGACTACAATCCGAACTGAGAACAACTTTATGGGATTTGCT"
+            "TGACCTCGCGGTTTCGCTGCCCTTTGTATTGTCCATTGTAGCACGTGTGTAGCCCAAATCATAAGGGGCAT"
+            "GATGATTTGACGTCATCCCCACCTTCCTCCGGTTTGTCACCGGCAGTCAACTTAGAGTGCCCAACTTAAT"
+            "GATGGCAACTAAGCTTAAGGGTTGCGCTCGTTGCGGGACTTAACCCAACATCTCACGACACGAGCTGAC"
+            "GACAACCATGCACCACCTGTCACTCTGTCCCCCGAAGGGGAAAACTCTATCTCTAGAGGAGTCAGAGGA"
+            "TGTCAAGATTTGGTAAGGTTCTTCGCGTTGCTTCGAATTAAACCACATGCTCCACCGCTTGTGCGGGTC"
+            "CCCGTCAATTCCTTTGAGTTTCAACCTTGCGGTCGTACTCCCCAGGCGGAGTGCTTAATGCGTTAGCTG"
+            "CAGCACTAAGGGGCGGAAACCCCCTAACACTTAGCACTCATCGTTTACGGCGTGGACTACCAGGGTATC"
+            "TAATCCTGTTTGATCCCCACGCTTTCGCACATCAGCGTCAGTTACAGACCAGAAAGTCGCCTTCGCCAC"
+            "TGGTGTTCCTCCATATCTCTGCGCATTTCACCGCTACACAT"
+        )
+        fasta_bytes = f">REF3100 Testus fixturensis\n{trimmed_3100}\n".encode()
+        publish_resp = client.post(
+            "/reference-database/publish",
+            files={"fasta": ("reference.fasta", io.BytesIO(fasta_bytes), "text/plain")},
+            data={"version": "v1"},
+        )
+        assert publish_resp.status_code == 201, publish_resp.text
+
+        create_resp = client.post(
+            "/runs", files={"forward_read": _file_field(fixtures_dir, "3100.ab1")}
+        )
+        run_id = create_resp.json()["id"]
+        client.post(f"/runs/{run_id}/execute")
+
+        resp = client.get("/runs")
+
+        listed = next(r for r in resp.json() if r["id"] == run_id)
+        assert listed["identification_status"] == "PASS"
+
     def test_get_run_returns_summary_with_stage_statuses(self, client, fixtures_dir):
         created = self._create_two_file_run(client, fixtures_dir)
 

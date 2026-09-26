@@ -1,4 +1,5 @@
 import type { ReactNode } from "react"
+import { Link } from "react-router-dom"
 import { Card, CardContent } from "@/components/ui/card"
 import { cn } from "cn"
 
@@ -10,14 +11,19 @@ export function StatTile({
   value,
   icon,
   className,
+  href,
 }: {
   readonly label: string
   readonly value: ReactNode
   readonly icon?: ReactNode
   readonly className?: string
+  // When set, the tile becomes a link to wherever the underlying figure's
+  // detail lives -- e.g. "Pending review" drilling into the filtered run
+  // list, rather than leaving an analyst with a number and no next step.
+  readonly href?: string
 }) {
-  return (
-    <Card className={className}>
+  const card = (
+    <Card className={cn(href && "hover:border-primary/40 transition-colors", className)}>
       <CardContent className="flex items-start justify-between gap-3">
         <div>
           <p className="text-muted-foreground text-sm">{label}</p>
@@ -27,4 +33,6 @@ export function StatTile({
       </CardContent>
     </Card>
   )
+
+  return href ? <Link to={href}>{card}</Link> : card
 }
