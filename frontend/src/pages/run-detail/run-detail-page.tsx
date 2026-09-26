@@ -47,6 +47,14 @@ export function RunDetailPage() {
     "orientation",
     stageHasRun(stages, "orientation")
   )
+  // Only needed for the Trim tab's quality chart -- unlike the two above,
+  // its per-base quality_scores array is a real payload, not small
+  // metadata, so it's not worth fetching on every other tab too.
+  const ab1ExtractionQuery = useStage(
+    run?.id ?? "",
+    "ab1_extraction",
+    effectiveActiveStage === "trim" && stageHasRun(stages, "ab1_extraction")
+  )
 
   if (isLoading) {
     return (
@@ -80,6 +88,7 @@ export function RunDetailPage() {
             sampleId={run.sample_id}
             sanityCheckStage={sanityCheckQuery.data}
             orientationStage={orientationQuery.data}
+            ab1ExtractionStage={ab1ExtractionQuery.data}
           />
         </div>
       </div>

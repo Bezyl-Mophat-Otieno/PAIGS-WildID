@@ -40,6 +40,7 @@ interface StagePanelProps {
   readonly sampleId: string
   readonly sanityCheckStage: Stage | undefined
   readonly orientationStage: Stage | undefined
+  readonly ab1ExtractionStage: Stage | undefined
 }
 
 export function StagePanel({
@@ -51,6 +52,7 @@ export function StagePanel({
   sampleId,
   sanityCheckStage,
   orientationStage,
+  ab1ExtractionStage,
 }: StagePanelProps) {
   if (!hasRun) return <PendingPanel />
   if (isLoading || !stage) {
@@ -82,7 +84,12 @@ export function StagePanel({
         />
       )
     case "trim":
-      return <TrimPanel output={stage.output as TrimOutput} />
+      return (
+        <TrimPanel
+          output={stage.output as TrimOutput}
+          ab1ExtractionOutput={ab1ExtractionStage?.output as Ab1ExtractionOutput | undefined}
+        />
+      )
     case "orientation":
       if (stage.status === "skipped") return <SkippedPanel reason={singleReadReason ?? "Not applicable to this run."} />
       return <OrientationPanel output={stage.output as OrientationOutput} singleReadReason={singleReadReason} />

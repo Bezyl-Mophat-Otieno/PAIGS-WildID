@@ -8,7 +8,7 @@ export function SlotGrid<T>({
   renderSlot,
 }: {
   readonly data: Partial<Record<ReadSlotKey, T>>
-  readonly renderSlot: (data: T) => ReactNode
+  readonly renderSlot: (data: T, slot: ReadSlotKey) => ReactNode
 }) {
   const slots = (Object.keys(READ_SLOT_LABELS) as ReadSlotKey[]).filter((slot) => data[slot])
 
@@ -17,7 +17,7 @@ export function SlotGrid<T>({
       {slots.map((slot) => (
         <div key={slot} className="border-border rounded-lg border p-4">
           <p className="mb-3 text-sm font-semibold">{READ_SLOT_LABELS[slot]}</p>
-          {renderSlot(data[slot]!)}
+          {renderSlot(data[slot]!, slot)}
         </div>
       ))}
     </div>
