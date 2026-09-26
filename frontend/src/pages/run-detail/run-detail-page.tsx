@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { useParams } from "react-router-dom"
+import { PipelineFunnelPanel } from "@/components/run-detail/pipeline-funnel-panel"
 import { RunHeader } from "@/components/run-detail/run-header"
 import { RunStepper } from "@/components/run-detail/run-stepper"
 import { StagePanel } from "@/components/run-detail/stage-panel"
@@ -55,6 +56,13 @@ export function RunDetailPage() {
     "ab1_extraction",
     effectiveActiveStage === "trim" && stageHasRun(stages, "ab1_extraction")
   )
+  // Only needed for the BLAST tab's hit-comparison chart, to draw Stage
+  // 10's ambiguous-margin reference line alongside Stage 9's own hits.
+  const identificationQuery = useStage(
+    run?.id ?? "",
+    "identification",
+    effectiveActiveStage === "blast" && stageHasRun(stages, "identification")
+  )
 
   if (isLoading) {
     return (
@@ -75,6 +83,7 @@ export function RunDetailPage() {
     <div className="flex flex-col gap-6">
       <RunHeader run={run} isOwner={isOwner} />
       <ThresholdsUsedPanel runId={run.id} stages={run.stages} />
+      <PipelineFunnelPanel runId={run.id} stages={run.stages} />
       <div className="flex gap-6">
         <RunStepper stages={run.stages} activeStage={activeStage} onSelect={setActiveStage} />
         <div className="border-border min-w-0 flex-1 rounded-lg border p-6">
@@ -89,6 +98,7 @@ export function RunDetailPage() {
             sanityCheckStage={sanityCheckQuery.data}
             orientationStage={orientationQuery.data}
             ab1ExtractionStage={ab1ExtractionQuery.data}
+            identificationStage={identificationQuery.data}
           />
         </div>
       </div>

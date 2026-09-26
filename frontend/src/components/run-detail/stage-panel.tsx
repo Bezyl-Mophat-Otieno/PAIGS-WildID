@@ -41,6 +41,7 @@ interface StagePanelProps {
   readonly sanityCheckStage: Stage | undefined
   readonly orientationStage: Stage | undefined
   readonly ab1ExtractionStage: Stage | undefined
+  readonly identificationStage: Stage | undefined
 }
 
 export function StagePanel({
@@ -53,6 +54,7 @@ export function StagePanel({
   sanityCheckStage,
   orientationStage,
   ab1ExtractionStage,
+  identificationStage,
 }: StagePanelProps) {
   if (!hasRun) return <PendingPanel />
   if (isLoading || !stage) {
@@ -114,8 +116,18 @@ export function StagePanel({
       return <UsabilityCheckPanel output={stage.output as UsabilityCheckOutput} />
     case "fasta":
       return <FastaPanel output={stage.output as FastaOutput | ErrorOutput} />
-    case "blast":
-      return <BlastPanel output={stage.output as BlastOutput} />
+    case "blast": {
+      const identificationOutput =
+        identificationStage?.status === "completed"
+          ? (identificationStage.output as IdentificationOutput)
+          : undefined
+      return (
+        <BlastPanel
+          output={stage.output as BlastOutput}
+          ambiguousMarginPct={identificationOutput?.thresholds_applied.ambiguous_margin_pct}
+        />
+      )
+    }
     case "identification":
       return <IdentificationPanel output={stage.output as IdentificationOutput} />
     case "report":

@@ -1,3 +1,4 @@
+import { BlastHitChart } from "@/components/charts/blast-hit-chart"
 import { ErrorPanel } from "@/components/run-detail/panel-states"
 import { StatRow } from "@/components/stat-row"
 import {
@@ -10,7 +11,16 @@ import {
 } from "@/components/ui/table"
 import type { BlastOutput } from "@/types/api"
 
-export function BlastPanel({ output }: { readonly output: BlastOutput }) {
+export function BlastPanel({
+  output,
+  ambiguousMarginPct,
+}: {
+  readonly output: BlastOutput
+  // Stage 10's own margin threshold -- only known once Identification has
+  // run, so this stays optional and the chart just skips the reference
+  // line until then.
+  readonly ambiguousMarginPct?: number
+}) {
   if ("error" in output) return <ErrorPanel message={output.error} />
 
   return (
@@ -19,6 +29,9 @@ export function BlastPanel({ output }: { readonly output: BlastOutput }) {
         <StatRow label="Reference DB version" value={output.database_version} />
         <StatRow label="Query length" value={`${output.query_length} bp`} />
       </div>
+      {output.hits.length > 0 && (
+        <BlastHitChart hits={output.hits} ambiguousMarginPct={ambiguousMarginPct} />
+      )}
       <Table>
         <TableHeader>
           <TableRow>
