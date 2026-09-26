@@ -272,9 +272,18 @@ export interface PublishReferenceDatabaseResult {
   sequence_count: number
 }
 
+// GET /runs/{id}/chromatogram/{slot}. `channel_order` gives dye order as
+// actually read off the AB1 file (NOT a fixed A/C/G/T order -- it varies
+// per machine/file) -- `trace` is keyed by the base letter itself, not a
+// channel number, so always resolve color/label from these keys rather
+// than assuming a fixed 4-channel order. `peak_locations`/`base_calls` are
+// parallel arrays (one entry per called base, matching ab1_extraction's
+// raw_sequence 1:1): peak_locations[i] is the trace-sample index of that
+// base's peak, base_calls[i] is the letter.
 export interface ChromatogramData {
   channel_order: string[]
   trace: Record<string, number[]>
+  num_samples: number
   peak_locations: number[]
-  base_calls: string[]
+  base_calls: string
 }

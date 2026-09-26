@@ -1,3 +1,4 @@
+import { ChromatogramDialog } from "@/components/charts/chromatogram/chromatogram-dialog"
 import { TrimQualityChart } from "@/components/charts/trim-quality-chart"
 import { SequenceBlock } from "@/components/run-detail/sequence-block"
 import { SlotGrid } from "@/components/run-detail/slot-grid"
@@ -5,9 +6,11 @@ import { StatRow } from "@/components/stat-row"
 import type { Ab1ExtractionOutput, ReadSlotKey, TrimOutput } from "@/types/api"
 
 export function TrimPanel({
+  runId,
   output,
   ab1ExtractionOutput,
 }: {
+  readonly runId: string
   readonly output: TrimOutput
   readonly ab1ExtractionOutput: Ab1ExtractionOutput | undefined
 }) {
@@ -40,6 +43,14 @@ export function TrimPanel({
               />
             </div>
             <SequenceBlock sequence={result.trimmed_sequence} copyLabel="trimmed sequence" />
+            <div className="self-start">
+              <ChromatogramDialog
+                runId={runId}
+                slot={slot}
+                trimRange={{ start: result.trim_start, end: result.trim_end }}
+                initialPosition={result.trim_start}
+              />
+            </div>
           </div>
         )
       }}

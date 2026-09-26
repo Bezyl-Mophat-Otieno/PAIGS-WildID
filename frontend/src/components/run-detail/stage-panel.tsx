@@ -86,6 +86,7 @@ export function StagePanel({
     case "trim":
       return (
         <TrimPanel
+          runId={runId}
           output={stage.output as TrimOutput}
           ab1ExtractionOutput={ab1ExtractionStage?.output as Ab1ExtractionOutput | undefined}
         />
