@@ -59,6 +59,29 @@ class NoActiveReferenceDatabaseError(RuntimeError):
     """Raised when a search is requested but no reference database has ever been published."""
 
 
+class RemoteBlastNotImplementedError(NotImplementedError):
+    """Raised when blast.mode="remote" -- the catalog's own default (see
+    app.configuration.catalog) -- is selected for a run, but the actual
+    NCBI remote-search dispatch (the blastn -remote subprocess call,
+    response caching for the audit trail, and the report's
+    remote-vs-local differentiation) hasn't been built yet. Deliberately
+    a loud, typed failure rather than silently falling back to a local
+    search under a "remote" label -- that would defeat the entire point
+    of making the search mode auditable and visible to the analyst. Set
+    blast.mode="local" (globally via PUT /config, or per-run via
+    config_overrides) to use the local path that is implemented."""
+
+    def __init__(self, remote_database: str, entrez_query: str):
+        self.remote_database = remote_database
+        self.entrez_query = entrez_query
+        super().__init__(
+            f"Remote BLAST search (database={remote_database!r}, "
+            f"entrez_query={entrez_query!r}) is not implemented yet. Override "
+            f"blast.mode to 'local' for this run (or globally via PUT /config) "
+            f"to search the curated local reference DB instead."
+        )
+
+
 def _validate_fasta(fasta_path: Path) -> List[SeqRecord]:
     """
     Attempt to parse the FASTA -- the parse attempt is the check, same
@@ -202,17 +225,33 @@ def search_active_reference_database(
     db: Session,
     *,
     max_hits: int = DEFAULT_MAX_HITS,
+    mode: str = "remote",
+    remote_database: str = "nt",
+    entrez_query: str = "",
 ) -> BlastSearchResult:
     """
     The other half of the Stage 8 -> Stage 9 handoff named in
     claude/stage-8-9-status.md's Known follow-ups: look up whichever
     reference database version is currently active and search
-    `query_fasta` against it, via Stage 9's own search_blast() --
-    unchanged, exactly as that doc's reference-DB design predicted it
-    would need to be. `query_fasta` should already be a real file on
-    disk -- see app.pipeline.fasta.write_fasta_file() for the other
-    half of the handoff, turning Stage 8's in-memory FASTA into one.
+    `query_fasta` against it, via Stage 9's own search_blast(). --
+    `query_fasta` should already be a real file on disk -- see
+    app.pipeline.fasta.write_fasta_file() for the other half of the
+    handoff, turning Stage 8's in-memory FASTA into one.
+
+    `mode`/`remote_database`/`entrez_query` are the blast.* config
+    catalog entries added for the remote-vs-local BLAST search decision
+    (see claude/remote-blast-search.md) -- kwargs_for_stage("blast")
+    hands all four keys (these three plus max_hits) to this function
+    together. `mode="remote"` is the catalog's own default, matching
+    "remote is the default, local is selectable" -- but the actual NCBI
+    dispatch isn't built yet (see RemoteBlastNotImplementedError's own
+    docstring for why that's a loud failure, not a silent local
+    fallback). Only `mode="local"` -- the pre-existing, fully
+    implemented path -- actually runs a search today.
     """
+    if mode == "remote":
+        raise RemoteBlastNotImplementedError(remote_database, entrez_query)
+
     active = get_active_version(db)
     if active is None:
         raise NoActiveReferenceDatabaseError(
@@ -220,9 +259,11 @@ def search_active_reference_database(
             "against. Publish one first via POST /reference-database/publish or "
             "scripts/publish_reference_db.py."
         )
-    return search_blast(
+    result = search_blast(
         query_fasta,
         Path(active.db_prefix),
         database_version=active.version,
         max_hits=max_hits,
     )
+    result.search_mode = "local"
+    return result

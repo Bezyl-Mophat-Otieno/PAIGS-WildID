@@ -38,9 +38,19 @@ EXPECTED_DEFAULTS = {
     "identification.ambiguous_margin_pct": DEFAULT_AMBIGUOUS_MARGIN_PCT,
 }
 
+# The three non-numeric ("enum"/"string") keys added for the
+# remote-vs-local BLAST search decision -- not part of EXPECTED_DEFAULTS
+# above since they don't map to a pipeline module's own DEFAULT_*
+# constant, and aren't cast through float().
+NON_NUMERIC_DEFAULTS = {
+    "blast.mode": "remote",
+    "blast.remote_database": "nt",
+    "blast.entrez_query": "",
+}
 
-def test_catalog_has_exactly_the_thirteen_expected_keys():
-    assert {d.key for d in CATALOG} == set(EXPECTED_DEFAULTS)
+
+def test_catalog_has_exactly_the_expected_keys():
+    assert {d.key for d in CATALOG} == set(EXPECTED_DEFAULTS) | set(NON_NUMERIC_DEFAULTS)
 
 
 def test_catalog_keys_are_unique():
@@ -67,9 +77,53 @@ def test_value_type_matches_the_default_constants_own_python_type():
         "usability_check.min_length",
         "blast.max_hits",
     }
+    enum_keys = {"blast.mode", "blast.remote_database"}
+    string_keys = {"blast.entrez_query"}
     for definition in CATALOG:
-        expected = "int" if definition.key in int_keys else "float"
+        if definition.key in enum_keys:
+            expected = "enum"
+        elif definition.key in string_keys:
+            expected = "string"
+        elif definition.key in int_keys:
+            expected = "int"
+        else:
+            expected = "float"
         assert definition.value_type == expected, definition.key
+
+
+class TestNonNumericEntries:
+    """blast.mode / blast.remote_database / blast.entrez_query -- the
+    three keys added for the remote-vs-local BLAST search decision (see
+    claude/remote-blast-search.md). Unlike every other catalog entry,
+    these aren't "int"/"float" thresholds validated against `bounds`;
+    they're a fixed choice ("enum", validated against `choices`) or free
+    text ("string")."""
+
+    def test_defaults_match_the_documented_remote_first_design(self):
+        for key, expected in NON_NUMERIC_DEFAULTS.items():
+            assert CATALOG_BY_KEY[key].default == expected, key
+
+    def test_blast_mode_is_an_enum_defaulting_to_remote_with_local_selectable(self):
+        definition = CATALOG_BY_KEY["blast.mode"]
+        assert definition.value_type == "enum"
+        assert definition.default == "remote"
+        assert definition.choices == ("remote", "local")
+
+    def test_blast_remote_database_is_an_enum_with_nt_as_the_default(self):
+        definition = CATALOG_BY_KEY["blast.remote_database"]
+        assert definition.value_type == "enum"
+        assert definition.default == "nt"
+        assert set(definition.choices) >= {"nt", "refseq_rna", "refseq_genomic"}
+
+    def test_blast_entrez_query_is_free_text_with_no_choices(self):
+        definition = CATALOG_BY_KEY["blast.entrez_query"]
+        assert definition.value_type == "string"
+        assert definition.default == ""
+        assert definition.choices is None
+
+    def test_non_numeric_entries_have_no_numeric_bounds(self):
+        for key in NON_NUMERIC_DEFAULTS:
+            assert CATALOG_BY_KEY[key].bounds == (None, None)
 
 
 def test_proportion_and_probability_keys_have_zero_one_bounds():

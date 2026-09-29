@@ -4,7 +4,7 @@ export interface EffectiveThresholdRow {
   key: string
   stageType: StageType
   paramName: string
-  value: number
+  value: number | string
 }
 
 // Mirrors what the backend's own report generation assembles internally
@@ -27,7 +27,7 @@ export function buildEffectiveThresholds(
 
   for (const stageType of THRESHOLDS_FROM_METADATA) {
     const metadata = stagesByType[stageType]?.stage_metadata as
-      | { thresholds?: Record<string, number> }
+      | { thresholds?: Record<string, number | string> }
       | null
       | undefined
     if (!metadata?.thresholds) continue

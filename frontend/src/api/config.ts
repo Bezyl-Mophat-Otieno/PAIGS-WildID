@@ -6,7 +6,7 @@ export async function listConfig() {
   return data
 }
 
-export async function updateConfig(id: string, value: number) {
+export async function updateConfig(id: string, value: number | string) {
   const { data } = await apiClient.put<ConfigItem>(`/config/${id}`, { value })
   return data
 }

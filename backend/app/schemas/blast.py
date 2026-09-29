@@ -17,3 +17,10 @@ class BlastSearchResult(BaseModel):
     hits: List[BlastHit]
     database_version: str
     query_length: int
+    # "local" (the only mode actually implemented today) or "remote" --
+    # the report/audit-trail differentiator the remote-vs-local BLAST
+    # decision requires (see claude/remote-blast-search.md). Defaults to
+    # "local" so every pre-existing caller/fixture that builds a
+    # BlastSearchResult without naming a mode keeps meaning what it
+    # always meant.
+    search_mode: str = "local"

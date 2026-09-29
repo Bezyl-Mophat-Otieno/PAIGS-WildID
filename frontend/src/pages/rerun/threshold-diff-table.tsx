@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/table"
 import type { ThresholdDiffRow } from "@/lib/rerun-prefill"
 
-function formatValue(value: number | undefined) {
+function formatValue(value: number | string | undefined) {
   return value === undefined ? "—" : value
 }
 

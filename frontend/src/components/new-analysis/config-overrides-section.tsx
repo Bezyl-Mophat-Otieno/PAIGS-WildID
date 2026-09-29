@@ -9,14 +9,14 @@ import { cn } from "cn"
 import type { ConfigItem } from "@/types/api"
 
 interface ConfigOverridesSectionProps<
-  TFieldValues extends FieldValues & { thresholds: Record<string, number> },
+  TFieldValues extends FieldValues & { thresholds: Record<string, number | string> },
 > {
   readonly items: ConfigItem[]
   readonly control: Control<TFieldValues>
 }
 
 export function ConfigOverridesSection<
-  TFieldValues extends FieldValues & { thresholds: Record<string, number> },
+  TFieldValues extends FieldValues & { thresholds: Record<string, number | string> },
 >({ items, control }: ConfigOverridesSectionProps<TFieldValues>) {
   const [open, setOpen] = useState(false)
   const groups = groupConfigByStage(items)

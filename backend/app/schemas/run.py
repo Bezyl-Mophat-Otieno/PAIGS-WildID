@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -33,8 +33,10 @@ class RunRead(BaseModel):
     status: str
     # Per-run threshold overrides supplied at POST /runs or POST
     # /runs/{id}/rerun time -- null when the analyst didn't override
-    # anything (see app.models.run.Run's own docstring).
-    config_overrides: Optional[Dict[str, float]] = None
+    # anything (see app.models.run.Run's own docstring). Values are
+    # floats for numeric catalog keys, strings for "enum"/"string" keys
+    # (e.g. blast.mode, blast.remote_database, blast.entrez_query).
+    config_overrides: Optional[Dict[str, Union[float, str]]] = None
     # Set only on a Run created via POST /runs/{id}/rerun -- the
     # original Run this one reused the file(s) of.
     rerun_of: Optional[str] = None
@@ -75,6 +77,6 @@ class RerunRequest(BaseModel):
     caller explicitly opts into the shortcut.
     """
 
-    config_overrides: Optional[Dict[str, float]] = None
+    config_overrides: Optional[Dict[str, Union[float, str]]] = None
     sample_id: Optional[str] = None
     auto_execute: bool = False

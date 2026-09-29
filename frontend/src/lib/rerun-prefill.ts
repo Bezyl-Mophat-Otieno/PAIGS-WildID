@@ -20,8 +20,8 @@ export function mergeSourceThresholds(
 export interface ThresholdDiffRow {
   key: string
   label: string
-  sourceValue: number | undefined
-  rerunValue: number | undefined
+  sourceValue: number | string | undefined
+  rerunValue: number | string | undefined
   changed: boolean
 }
 

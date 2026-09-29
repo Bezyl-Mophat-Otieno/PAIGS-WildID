@@ -14,15 +14,23 @@ CLAUDE.md's own Configuration model section names four stages explicitly
 by number (3, 4, 7, 10); Stage 5's orientation-overlap bar and Stage 9's
 max_hits were added on the user's explicit request during that doc's
 review, on the same "a deliberate choice, not silent inheritance"
-reasoning -- see that doc's own per-stage notes. All 13 thresholds across
-6 stages are catalogued here as one flat list, keyed
+reasoning -- see that doc's own per-stage notes. All entries across 6
+stages are catalogued here as one flat list, keyed
 "<stage_type>.<param_name>" -- that key is what a per-run
 config_overrides dict (POST /runs, POST /runs/{id}/rerun) and PUT
 /config/{id} both address, and it's exactly the kwarg name each stage's
 own pipeline function accepts (via app.configuration.service.kwargs_for_stage).
+
+Most entries are numeric ("int"/"float", validated against `bounds`). The
+three `blast.mode` / `blast.remote_database` / `blast.entrez_query`
+entries are not -- they're the remote-vs-local BLAST search decision (see
+claude/remote-blast-search.md): a fixed-choice ("enum", validated against
+`choices`) or free-text ("string", unvalidated beyond type) value instead
+of a number. `bounds` is meaningless for those two value_types and is
+left at its (None, None) default.
 """
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from app.pipeline.blast import DEFAULT_MAX_HITS
 from app.pipeline.identification import (
@@ -47,22 +55,29 @@ class ThresholdDefinition:
     param_name: str  # exact kwarg name the pipeline function accepts
     label: str
     description: str
-    default: float
-    value_type: str  # "int" | "float" -- how to cast a stored/override value back
-    bounds: Tuple[Optional[float], Optional[float]]  # (low, high); either may be None
+    default: Any  # float for "int"/"float"; str for "enum"/"string"
+    value_type: str  # "int" | "float" | "enum" | "string"
+    bounds: Tuple[Optional[float], Optional[float]] = (None, None)  # numeric only
+    choices: Optional[Tuple[str, ...]] = None  # "enum" only -- the allowed values
 
 
-def _entry(stage_type, param_name, default, label, description, bounds):
-    value_type = "int" if isinstance(default, int) else "float"
+def _entry(stage_type, param_name, default, label, description, bounds=(None, None), *, choices=None):
+    if isinstance(default, str):
+        value_type = "enum" if choices else "string"
+        stored_default = default
+    else:
+        value_type = "int" if isinstance(default, int) else "float"
+        stored_default = float(default)
     return ThresholdDefinition(
         key=f"{stage_type}.{param_name}",
         stage_type=stage_type,
         param_name=param_name,
         label=label,
         description=description,
-        default=float(default),
+        default=stored_default,
         value_type=value_type,
         bounds=bounds,
+        choices=tuple(choices) if choices else None,
     )
 
 
@@ -144,6 +159,39 @@ CATALOG = [
         "shown in the report. Not a biological cutoff -- just how many "
         "candidates get evaluated.",
         (1, None),
+    ),
+    _entry(
+        "blast", "mode", "remote",
+        "Search mode",
+        "Whether this run searches NCBI's live remote database (default) "
+        "or this deployment's own curated, versioned local reference DB "
+        "(selectable per run). A remote search's raw response is cached "
+        "verbatim against this run for the audit trail -- NCBI's own "
+        "databases change over time, so the search itself can't be "
+        "guaranteed to reproduce identically later, unlike a local "
+        "search against a pinned reference version. The report must "
+        "make plain which mode a run used.",
+        choices=("remote", "local"),
+    ),
+    _entry(
+        "blast", "remote_database", "nt",
+        "Remote NCBI database",
+        "Which NCBI-hosted nucleotide database a remote search targets. "
+        "nt is the full nucleotide collection (broadest, includes "
+        "unfiltered environmental/metagenomic submissions); core_nt is a "
+        "deduplicated/filtered nt; refseq_rna / refseq_genomic are "
+        "curated RefSeq sets (narrower, cleaner, may miss species with "
+        "no RefSeq entry). Ignored when blast.mode is 'local'.",
+        choices=("nt", "core_nt", "refseq_rna", "refseq_genomic"),
+    ),
+    _entry(
+        "blast", "entrez_query", "",
+        "Entrez restriction query",
+        "Optional NCBI Entrez-syntax filter applied at the remote search "
+        "itself -- e.g. 'NOT environmental sample[filter] NOT "
+        "uncultured[Organism]' to strip contamination-prone entries, or "
+        "a taxonomy restriction like 'Chordata[Organism]'. Blank means "
+        "no restriction. Ignored when blast.mode is 'local'.",
     ),
     _entry(
         "identification", "min_identity_pct", DEFAULT_MIN_IDENTITY_PCT,

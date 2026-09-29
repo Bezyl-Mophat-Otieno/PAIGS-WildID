@@ -20,7 +20,11 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import get_current_user, require_admin
 from app.configuration import service as config_service
 from app.configuration.catalog import CATALOG_BY_KEY
-from app.configuration.errors import ConfigNotFoundError, ConfigValueOutOfBoundsError
+from app.configuration.errors import (
+    ConfigNotFoundError,
+    ConfigValueNotAllowedError,
+    ConfigValueOutOfBoundsError,
+)
 from app.db import get_db
 from app.models.config import ConfigThreshold
 from app.models.user import User
@@ -38,9 +42,10 @@ def _to_read(row: ConfigThreshold) -> ConfigThresholdRead:
         param_name=definition.param_name,
         label=definition.label,
         description=definition.description,
-        value=row.value,
+        value=config_service.value_of(row),
         value_type=definition.value_type,
         default=definition.default,
+        choices=list(definition.choices) if definition.choices else None,
         updated_at=row.updated_at,
     )
 
@@ -62,6 +67,6 @@ def update_config(
         row = config_service.update_config(db, config_id, payload.value)
     except ConfigNotFoundError:
         raise HTTPException(status_code=404, detail="Config threshold not found.")
-    except ConfigValueOutOfBoundsError as exc:
+    except (ConfigValueOutOfBoundsError, ConfigValueNotAllowedError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return _to_read(row)

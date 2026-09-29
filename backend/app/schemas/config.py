@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -12,11 +13,15 @@ class ConfigThresholdRead(BaseModel):
     param_name: str
     label: str
     description: str
-    value: float
+    value: Union[float, str]
     value_type: str
-    default: float
+    default: Union[float, str]
+    # Only set for "enum"-typed keys (e.g. blast.mode, blast.remote_database)
+    # -- the fixed set of allowed values a PUT /config/{id} or per-run
+    # config_overrides entry must pick from. Null for "int"/"float"/"string".
+    choices: Optional[List[str]] = None
     updated_at: datetime
 
 
 class ConfigUpdate(BaseModel):
-    value: float = Field(..., description="The new threshold value.")
+    value: Union[float, str] = Field(..., description="The new threshold value.")

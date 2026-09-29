@@ -215,7 +215,9 @@ export interface Run {
   current_stage: StageType
   status: RunStatus
   rerun_of: string | null
-  config_overrides: Record<string, number> | null
+  // Values are numbers for numeric catalog keys, strings for "enum"/"string"
+  // keys (blast.mode, blast.remote_database, blast.entrez_query).
+  config_overrides: Record<string, number | string> | null
   // Null until this run's identification stage has completed (still
   // running, or stopped at an earlier hard gate).
   identification_status: IdentificationStatus | null
@@ -229,7 +231,10 @@ export interface RunDetail extends Run {
 
 // GET /config never exposes bounds (they're server-only, enforced via a 422
 // on submit) -- so there's no min/max here. value_type says how to treat
-// `value`/`default` (int vs float) without hardcoding it per key.
+// `value`/`default`: "int"/"float" are numbers, "enum" (a fixed set of
+// choices -- blast.mode, blast.remote_database) and "string" (free text --
+// blast.entrez_query) are strings. `choices` is only ever populated for
+// "enum" keys; null otherwise.
 export interface ConfigItem {
   id: string
   key: string
@@ -237,9 +242,10 @@ export interface ConfigItem {
   param_name: string
   label: string
   description: string
-  value: number
-  value_type: "int" | "float"
-  default: number
+  value: number | string
+  value_type: "int" | "float" | "enum" | "string"
+  default: number | string
+  choices: string[] | null
   updated_at: string
 }
 

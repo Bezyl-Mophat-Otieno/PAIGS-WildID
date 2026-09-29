@@ -26,6 +26,20 @@ class TestListConfig:
             assert row["label"]
             assert row["description"]
 
+    def test_blast_mode_defaults_to_remote_and_reports_its_choices(self, client):
+        resp = client.get("/config")
+        row = next(r for r in resp.json() if r["key"] == "blast.mode")
+
+        assert row["value"] == "remote"
+        assert row["value_type"] == "enum"
+        assert set(row["choices"]) == {"remote", "local"}
+
+    def test_numeric_entries_report_null_choices(self, client):
+        resp = client.get("/config")
+        row = next(r for r in resp.json() if r["key"] == "usability_check.min_length")
+
+        assert row["choices"] is None
+
 
 class TestUpdateConfig:
     def test_updates_the_value(self, client):
@@ -57,6 +71,34 @@ class TestUpdateConfig:
         resp = client.put(f"/config/{row['id']}", json={"value": 5.0})
 
         assert resp.status_code == 422
+
+    def test_updates_blast_mode_to_local(self, client):
+        rows = client.get("/config").json()
+        row = next(r for r in rows if r["key"] == "blast.mode")
+
+        resp = client.put(f"/config/{row['id']}", json={"value": "local"})
+
+        assert resp.status_code == 200
+        assert resp.json()["value"] == "local"
+
+    def test_returns_422_for_a_blast_mode_value_outside_its_choices(self, client):
+        rows = client.get("/config").json()
+        row = next(r for r in rows if r["key"] == "blast.mode")
+
+        resp = client.put(f"/config/{row['id']}", json={"value": "hybrid"})
+
+        assert resp.status_code == 422
+
+    def test_updates_entrez_query_free_text(self, client):
+        rows = client.get("/config").json()
+        row = next(r for r in rows if r["key"] == "blast.entrez_query")
+
+        resp = client.put(
+            f"/config/{row['id']}", json={"value": "NOT environmental sample[filter]"}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["value"] == "NOT environmental sample[filter]"
 
 
 class TestConfigRequiresAuthentication:

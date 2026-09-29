@@ -6,9 +6,10 @@ covered separately in test_api_config.py.
 import pytest
 
 from app.configuration import service as config_service
-from app.configuration.catalog import CATALOG
+from app.configuration.catalog import CATALOG, CATALOG_BY_KEY
 from app.configuration.errors import (
     ConfigNotFoundError,
+    ConfigValueNotAllowedError,
     ConfigValueOutOfBoundsError,
     UnknownConfigKeyError,
 )
@@ -20,9 +21,23 @@ class TestEnsureSeeded:
         config_service.ensure_seeded(db_session)
         rows = db_session.query(ConfigThreshold).all()
         assert len(rows) == len(CATALOG)
-        by_key = {row.key: row.value for row in rows}
+        by_key = {row.key: config_service.value_of(row) for row in rows}
         for definition in CATALOG:
             assert by_key[definition.key] == definition.default
+
+    def test_numeric_keys_seed_into_the_value_column_and_non_numeric_into_value_text(
+        self, db_session
+    ):
+        config_service.ensure_seeded(db_session)
+        rows = {row.key: row for row in db_session.query(ConfigThreshold).all()}
+
+        numeric_row = rows["trim.quality_threshold"]
+        assert numeric_row.value == 20.0
+        assert numeric_row.value_text is None
+
+        enum_row = rows["blast.mode"]
+        assert enum_row.value is None
+        assert enum_row.value_text == "remote"
 
     def test_is_idempotent_and_never_overwrites_an_edited_value(self, db_session):
         config_service.ensure_seeded(db_session)
@@ -72,6 +87,21 @@ class TestUpdateConfig:
         with pytest.raises(ConfigValueOutOfBoundsError):
             config_service.update_config(db_session, row.id, -1)
 
+    def test_updates_an_enum_key_into_its_value_text_column(self, db_session):
+        rows = config_service.list_config(db_session)
+        row = next(r for r in rows if r.key == "blast.mode")
+
+        updated = config_service.update_config(db_session, row.id, "local")
+
+        assert updated.value_text == "local"
+        assert config_service.value_of(updated) == "local"
+
+    def test_raises_for_a_disallowed_enum_value(self, db_session):
+        rows = config_service.list_config(db_session)
+        row = next(r for r in rows if r.key == "blast.mode")
+        with pytest.raises(ConfigValueNotAllowedError):
+            config_service.update_config(db_session, row.id, "hybrid")
+
 
 class TestValidateOverrides:
     def test_accepts_known_keys_within_bounds(self):
@@ -84,6 +114,18 @@ class TestValidateOverrides:
     def test_rejects_out_of_bounds_value(self):
         with pytest.raises(ConfigValueOutOfBoundsError):
             config_service.validate_overrides({"orientation.min_identity": 2.0})
+
+    def test_accepts_local_as_a_valid_blast_mode_override(self):
+        config_service.validate_overrides({"blast.mode": "local"})
+
+    def test_rejects_a_blast_mode_value_outside_its_choices(self):
+        with pytest.raises(ConfigValueNotAllowedError):
+            config_service.validate_overrides({"blast.mode": "hybrid"})
+
+    def test_accepts_any_free_text_for_entrez_query(self):
+        config_service.validate_overrides(
+            {"blast.entrez_query": "NOT environmental sample[filter]"}
+        )
 
 
 class TestEffectiveThresholds:
@@ -132,3 +174,13 @@ class TestKwargsForStage:
         effective = config_service.effective_thresholds(db_session)
         kwargs = config_service.kwargs_for_stage(effective, "orientation")
         assert isinstance(kwargs["min_identity"], float)
+
+    def test_blast_kwargs_include_the_search_mode_keys_alongside_max_hits(self, db_session):
+        effective = config_service.effective_thresholds(db_session)
+        kwargs = config_service.kwargs_for_stage(effective, "blast")
+        assert kwargs == {
+            "max_hits": 10,
+            "mode": "remote",
+            "remote_database": "nt",
+            "entrez_query": "",
+        }

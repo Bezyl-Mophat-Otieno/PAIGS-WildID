@@ -48,18 +48,30 @@ def _true_pair(seed: int, length: int, split: int):
     return "".join(rng.choice("ATGC") for _ in range(length))
 
 
-def _make_run(db_session, sample_id="WILD_TEST", original_filenames=None) -> Run:
+def _make_run(db_session, sample_id="WILD_TEST", original_filenames=None, config_overrides=None) -> Run:
     # owner_id is required on every Run (see app.models.run.Run's own
     # docstring) but ownership isn't what these tests exercise -- they
     # call continue_run_from_extraction() directly, bypassing the API
     # layer (app.api.runs._get_owned_run) that actually enforces it --
     # so a fixed placeholder id is enough here.
+    #
+    # blast.mode defaults to "local" here (rather than the catalog's own
+    # "remote" default) because this whole file is about pipeline
+    # mechanics against the local reference DB fixture
+    # (_publish_matching_reference), not about which BLAST mode gets
+    # selected -- remote dispatch isn't implemented yet (see
+    # RemoteBlastNotImplementedError), so leaving the global "remote"
+    # default in place here would stop every one of these runs at Stage
+    # 9 regardless of what's actually being tested. A test that wants
+    # the real default (or a different override) passes its own
+    # config_overrides.
     run = Run(
         sample_id=sample_id,
         original_filenames=original_filenames or ["forward.ab1", "reverse.ab1"],
         current_stage="import",
         status="in_progress",
         owner_id="test-owner-id",
+        config_overrides=config_overrides if config_overrides is not None else {"blast.mode": "local"},
     )
     db_session.add(run)
     db_session.flush()
@@ -472,7 +484,7 @@ class TestContinueRunFromExtractionWithConfigOverrides:
         _publish_matching_reference(db_session, temp_reference_data_root, tmp_path, good_seq)
 
         effective = config_service.effective_thresholds(
-            db_session, {"usability_check.min_length": 800}
+            db_session, {"usability_check.min_length": 800, "blast.mode": "local"}
         )
 
         result = continue_run_from_extraction(

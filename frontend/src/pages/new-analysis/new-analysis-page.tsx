@@ -21,7 +21,7 @@ import type { ConfigItem } from "@/types/api"
 
 const formSchema = z.object({
   sample_id: z.string().min(1, "Sample label is required"),
-  thresholds: z.record(z.string(), z.number()),
+  thresholds: z.record(z.string(), z.union([z.number(), z.string()])),
 })
 
 type FormValues = z.infer<typeof formSchema>
@@ -76,7 +76,7 @@ export function NewAnalysisPage() {
       // untouched threshold is left out entirely, never resent at its
       // current value (DESIGN.md's New Analysis section).
       const dirtyThresholds = form.formState.dirtyFields.thresholds ?? {}
-      const overrides: Record<string, number> = {}
+      const overrides: Record<string, number | string> = {}
       for (const item of configQuery.data ?? []) {
         const fieldName = toFieldName(item.key)
         if (dirtyThresholds[fieldName]) {

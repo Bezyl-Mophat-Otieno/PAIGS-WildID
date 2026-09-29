@@ -116,8 +116,16 @@ class TestExecuteRun:
     def test_stops_at_blast_when_no_reference_database_is_published(
         self, client, fixtures_dir, temp_reference_data_root
     ):
+        # blast.mode="local" forced explicitly: its catalog default is
+        # now "remote" (the remote-vs-local BLAST search decision -- see
+        # app.configuration.catalog), but remote dispatch isn't
+        # implemented yet, so this test (specifically about the *local*
+        # path's own "nothing published" error) would otherwise stop at
+        # blast for the wrong reason.
         create_resp = client.post(
-            "/runs", files={"forward_read": _file_field(fixtures_dir, "3100.ab1")}
+            "/runs",
+            files={"forward_read": _file_field(fixtures_dir, "3100.ab1")},
+            data={"config_overrides": '{"blast.mode": "local"}'},
         )
         run_id = create_resp.json()["id"]
 
@@ -163,7 +171,13 @@ class TestExecuteRun:
         assert publish_resp.status_code == 201, publish_resp.text
 
         create_resp = client.post(
-            "/runs", files={"forward_read": _file_field(fixtures_dir, "3100.ab1")}
+            "/runs",
+            files={"forward_read": _file_field(fixtures_dir, "3100.ab1")},
+            # blast.mode's catalog default is "remote" (the
+            # remote-vs-local BLAST search decision); forced to "local"
+            # here since this test proves the local reference DB path
+            # end to end, and remote dispatch isn't implemented yet.
+            data={"config_overrides": '{"blast.mode": "local"}'},
         )
         run_id = create_resp.json()["id"]
 

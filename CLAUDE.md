@@ -189,15 +189,24 @@ ATCGATCGATCGATCGATCGATCG
 
 ## Stage 9 — BLAST comparison
 
-**What happens:** the FASTA sequence is searched against a curated reference database of known species sequences. BLAST finds the best approximate alignments, allowing for mismatches and gaps, since DNA between related species is never identical.
+**What happens:** the FASTA sequence is searched against a database of known species sequences. BLAST finds the best approximate alignments, allowing for mismatches and gaps, since DNA between related species is never identical.
 
 **How it's invoked:** BLAST+ is a separate compiled program, not a Python package — the backend installs it on the server and calls it as a subprocess (Biopython's `Bio.Blast.Applications` can wrap this call). The server/Docker image needs the BLAST+ binary baked in, not just listed in `requirements.txt`.
 
-**The reference database:** built ahead of time from a curated FASTA file of known species (species/taxonomy, sequence, accession number, source, database version) using BLAST's `makeblastdb` tool, versioned separately from the app's own database — the version used must be recorded per run.
+**Remote by default, local selectable — and both fully auditable:**
 
-**Rules to configure:** the maximum number of ranked candidate hits kept for Stage 10 to evaluate (`max_hits`).
+- **Remote (the default):** the search runs against NCBI's own live, public nucleotide database (`nt` by default; `core_nt`/`refseq_rna`/`refseq_genomic` selectable) via BLAST+'s own `-remote` mode — no locally-built reference index required, and not limited to whatever species a curated FASTA happens to include.
+- **Local (selectable per run):** the search runs against this deployment's own curated, versioned reference database instead (built ahead of time — see below) — fully reproducible against a pinned reference version, at the cost of only covering the species that curated set contains.
+- **Why both, and why remote first:** an analyst must always know which one produced a given result, and the report must say so plainly — this is not a detail buried in metadata. Local search stays what it always was: a fixed, versioned, pinned-in-time reference set, so re-running the identical query later reproduces the identical result. Remote search trades that away — NCBI's own database changes over time, so the same query run again next month can legitimately return something different — in exchange for reach far beyond any curated set. The audit trail resolves this not by pretending remote search is reproducible, but by **caching the exact raw response BLAST returned, verbatim, against this run, at the moment it was made** — so what the identification was actually based on is permanently preserved as evidence, even though repeating the search later isn't guaranteed to reproduce it. A local search's own reference DB version already gives it that same guarantee for free, so nothing extra needs to be cached there.
+- **Narrowing/widening a remote search:** an optional NCBI Entrez-syntax restriction query (e.g. excluding `uncultured[Organism]`/`environmental sample[filter]` entries, or restricting to a taxonomic group) can be applied at the search itself, not filtered afterward — see Configuration model below.
 
-**Input:** Stage 8's FASTA file + the current reference database.
+**The local reference database:** built ahead of time from a curated FASTA file of known species (species/taxonomy, sequence, accession number, source, database version) using BLAST's `makeblastdb` tool, versioned separately from the app's own database — the version used must be recorded per run, exactly as it already is when local mode is selected.
+
+**Rules to configure:** the search mode itself (remote/local), which remote database to target, an optional Entrez restriction query, and the maximum number of ranked candidate hits kept for Stage 10 to evaluate (`max_hits`) — see Configuration model below.
+
+**Input:** Stage 8's FASTA file + (local mode) the current reference database, or (remote mode) NCBI's live database.
+
+**Implementation status:** the config keys, validation, and per-run selection described above exist today. The actual remote dispatch — the `blastn -remote` subprocess call, caching its raw response against the run, and the report's remote-specific evidence — does not yet; selecting (or defaulting to) `blast.mode: remote` currently stops the run at Stage 9 with a clear, typed error rather than silently falling back to a local search under a "remote" label. `blast.mode: local` is the one fully working path meanwhile, exactly as it always has been.
 
 **Output:** a ranked list of candidate hits, e.g.:
 
@@ -225,7 +234,7 @@ ATCGATCGATCGATCGATCGATCG
 
 ## Stage 11 — Reporting
 
-**What happens:** every prior stage's data is assembled into one auditable report — sample ID, format/sanity results, trimming applied, orientation outcome (including any label mismatch), consensus conflicts if any, the usability decision, reference DB version, every BLAST candidate's scores, thresholds used, final status, and stated limitations (e.g. "expert-assistance result, not a standalone forensic conclusion").
+**What happens:** every prior stage's data is assembled into one auditable report — sample ID, format/sanity results, trimming applied, orientation outcome (including any label mismatch), consensus conflicts if any, the usability decision, **which BLAST search mode was used (remote or local) made plain and impossible to miss — not a footnote** — plus whichever mode-specific evidence applies: the reference DB version (local) or the cached raw NCBI response and the exact moment it was queried (remote), every BLAST candidate's scores, thresholds used, final status, and stated limitations (e.g. "expert-assistance result, not a standalone forensic conclusion").
 
 **Tool:** ReportLab (or WeasyPrint) to generate the PDF.
 
@@ -236,6 +245,14 @@ ATCGATCGATCGATCGATCGATCG
 ## Configuration model
 
 Thresholds live in a config table with sensible starting defaults (pending real domain review) for: Stage 3's sanity thresholds, Stage 4's trim quality threshold, Stage 7's usability thresholds, Stage 9's maximum number of ranked BLAST hits kept, and Stage 10's identity/coverage thresholds (potentially per DNA marker or species).
+
+Most config entries are numeric thresholds. Three are not — they're Stage 9's remote-vs-local BLAST search decision, a fixed choice or free text rather than a number:
+
+| Key | Values | Default | What it controls |
+| --- | --- | --- | --- |
+| `blast.mode` | `remote` \| `local` | `remote` | Which database Stage 9 searches against — see Stage 9 above. |
+| `blast.remote_database` | `nt` \| `core_nt` \| `refseq_rna` \| `refseq_genomic` | `nt` | Which NCBI-hosted database a remote search targets; ignored in local mode. |
+| `blast.entrez_query` | free text | *(blank)* | An optional NCBI Entrez-syntax restriction applied at the remote search itself (e.g. excluding `uncultured[Organism]`/`environmental sample[filter]` entries, or restricting to a taxonomic group); ignored in local mode. |
 
 - **Global defaults** apply unless overridden.
 - **Before starting a run**, the analyst can review and override the defaults for that specific run — the values actually used are a deliberate choice at the point of analysis, not silently inherited.
@@ -333,7 +350,7 @@ Not duplicated here: the Validation Batch scorecard's own charts (accuracy/ambig
 | AB1 extraction | Biopython (`Bio.SeqIO`) | Parses the binary AB1 format into sequence + quality scores |
 | QC | NumPy | Numeric checks: mean quality, quality percentages |
 | Trimming + FASTA | Biopython | Removes poor-quality ends, writes standard FASTA |
-| Sequence search | BLAST+ (external binary) | Approximate alignment search against the reference database |
+| Sequence search | BLAST+ (external binary) | Approximate alignment search — remote by default (NCBI's own live database, over the internet), local reference database selectable per run |
 | Results parsing/ranking | pandas | Structures and filters BLAST's hit list |
 | Rules engine | Plain Python + a config table | Applies identity/coverage thresholds, taxonomic checks |
 | Reporting | ReportLab or WeasyPrint | Generates the audit-trail PDF |
@@ -343,6 +360,8 @@ Not duplicated here: the Validation Batch scorecard's own charts (accuracy/ambig
 | Validation batch scoring & stats | pandas + matplotlib/Plotly | Aggregates a Validation Batch's runs into a scorecard (accuracy, ambiguity/review rates, reproducibility, processing time); covers the statistics/visualization role the original brief assigned to R |
 
 Note: BLAST+ is a separate installed program, not a `pip install`-able package — it must be baked into the deployment image, not just listed as a Python dependency.
+
+Note: since remote search is the default, the deployment environment needs outbound internet access to NCBI for Stage 9 to succeed out of the box — a genuinely new operational dependency for this pipeline, since every other stage runs fully offline. Local mode remains fully offline, exactly as the whole pipeline always has been.
 
 ## Suggested build order for the prototype
 

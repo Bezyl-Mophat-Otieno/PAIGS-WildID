@@ -24,6 +24,7 @@ from app.pipeline.blast import search_blast
 from app.reference.publish import (
     InvalidReferenceFastaError,
     NoActiveReferenceDatabaseError,
+    RemoteBlastNotImplementedError,
     get_active_version,
     publish_reference_db,
     search_active_reference_database,
@@ -251,10 +252,31 @@ class TestSearchActiveReferenceDatabase:
     tests/test_fasta.py.
     """
 
+    # mode="local" is passed explicitly throughout this class: this file
+    # tests the local reference-DB search path specifically, but
+    # blast.mode's own catalog default is now "remote" (see
+    # app.configuration.catalog) -- the remote-vs-local BLAST search
+    # decision. Remote dispatch isn't implemented yet (see
+    # RemoteBlastNotImplementedError), so leaving mode unspecified here
+    # would raise that instead of exercising the local path this class is
+    # actually about.
+
     def test_raises_when_nothing_has_been_published_yet(self, tmp_path, db_session):
         query = FIXTURES_DIR / "synthetic_blast_query_exact_match.fasta"
 
         with pytest.raises(NoActiveReferenceDatabaseError):
+            search_active_reference_database(query, db_session, mode="local")
+
+    def test_raises_remote_not_implemented_when_mode_is_left_at_its_default(
+        self, tmp_path, db_session
+    ):
+        """blast.mode's catalog default is "remote" -- confirms that
+        calling this function with no mode kwarg (i.e. whatever its own
+        default is) surfaces the not-implemented error rather than
+        silently searching locally."""
+        query = FIXTURES_DIR / "synthetic_blast_query_exact_match.fasta"
+
+        with pytest.raises(RemoteBlastNotImplementedError):
             search_active_reference_database(query, db_session)
 
     def test_searches_against_the_active_version(self, tmp_path, db_session):
@@ -264,11 +286,12 @@ class TestSearchActiveReferenceDatabase:
         )
         query = FIXTURES_DIR / "synthetic_blast_query_exact_match.fasta"
 
-        result = search_active_reference_database(query, db_session)
+        result = search_active_reference_database(query, db_session, mode="local")
 
         assert result.database_version == "v1"
         assert result.hits[0].accession == "SYNTH001"
         assert result.hits[0].identity == pytest.approx(100.0)
+        assert result.search_mode == "local"
 
     def test_uses_whichever_version_is_currently_active(self, tmp_path, db_session):
         root = tmp_path / "reference_data"
@@ -277,7 +300,7 @@ class TestSearchActiveReferenceDatabase:
         publish_reference_db(fasta, "v2", db=db_session, reference_data_root=root)
         query = FIXTURES_DIR / "synthetic_blast_query_exact_match.fasta"
 
-        result = search_active_reference_database(query, db_session)
+        result = search_active_reference_database(query, db_session, mode="local")
 
         assert result.database_version == "v2"
 
@@ -288,6 +311,6 @@ class TestSearchActiveReferenceDatabase:
         )
         query = FIXTURES_DIR / "synthetic_blast_query_exact_match.fasta"
 
-        result = search_active_reference_database(query, db_session, max_hits=1)
+        result = search_active_reference_database(query, db_session, max_hits=1, mode="local")
 
         assert len(result.hits) <= 1

@@ -7,7 +7,7 @@ export interface CreateRunPayload {
   sample_id?: string
   forward_read?: File
   reverse_read?: File
-  config_overrides?: Record<string, number>
+  config_overrides?: Record<string, number | string>
 }
 
 export async function createRun(payload: CreateRunPayload) {
@@ -42,7 +42,7 @@ export async function executeRun(runId: string) {
 
 export interface RerunPayload {
   sample_id?: string
-  config_overrides?: Record<string, number>
+  config_overrides?: Record<string, number | string>
   // Defaults to false server-side (creates but doesn't run the sibling) --
   // this app always passes true to match every other run-creation flow.
   auto_execute?: boolean

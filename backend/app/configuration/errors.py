@@ -42,3 +42,20 @@ class ConfigNotFoundError(Exception):
     def __init__(self, config_id: str):
         self.config_id = config_id
         super().__init__(f"Config threshold '{config_id}' not found.")
+
+
+class ConfigValueNotAllowedError(Exception):
+    """Raised when a proposed value for an "enum"-typed key (e.g.
+    blast.mode) isn't one of the catalog entry's own documented
+    `choices` -- the enum/string counterpart to
+    ConfigValueOutOfBoundsError, which only makes sense for numeric
+    keys."""
+
+    def __init__(self, key: str, value, choices):
+        self.key = key
+        self.value = value
+        self.choices = choices
+        super().__init__(
+            f"Value '{value}' for '{key}' is not one of the allowed choices: "
+            f"{', '.join(choices)}."
+        )

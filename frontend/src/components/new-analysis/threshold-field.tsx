@@ -1,9 +1,9 @@
 import { Info, RotateCcw } from "lucide-react"
 import type { Control, FieldValues, Path } from "react-hook-form"
+import { ConfigValueControl } from "@/components/config/config-value-control"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form"
-import { Input } from "@/components/ui/input"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import type { ConfigItem } from "@/types/api"
 
@@ -51,11 +51,10 @@ export function ThresholdField<TFieldValues extends FieldValues>({
             )}
           </div>
           <FormControl>
-            <Input
-              type="number"
-              step={item.value_type === "int" ? 1 : "any"}
-              value={field.value as number}
-              onChange={(e) => field.onChange(e.target.valueAsNumber)}
+            <ConfigValueControl
+              item={item}
+              value={field.value as number | string}
+              onChange={field.onChange}
               onBlur={field.onBlur}
             />
           </FormControl>

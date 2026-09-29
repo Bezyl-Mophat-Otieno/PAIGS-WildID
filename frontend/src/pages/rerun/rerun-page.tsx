@@ -29,7 +29,7 @@ import type { ConfigItem, IdentificationOutput } from "@/types/api"
 
 const formSchema = z.object({
   sample_id: z.string().min(1, "Sample label is required"),
-  thresholds: z.record(z.string(), z.number()),
+  thresholds: z.record(z.string(), z.union([z.number(), z.string()])),
 })
 
 type FormValues = z.infer<typeof formSchema>
@@ -99,7 +99,7 @@ export function RerunPage() {
   const mutation = useMutation({
     mutationFn: async (values: FormValues) => {
       const dirtyThresholds = form.formState.dirtyFields.thresholds ?? {}
-      const overrides: Record<string, number> = {}
+      const overrides: Record<string, number | string> = {}
       for (const item of configQuery.data ?? []) {
         const fieldName = toFieldName(item.key)
         if (dirtyThresholds[fieldName]) {

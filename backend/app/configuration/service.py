@@ -18,10 +18,13 @@ from sqlalchemy.orm import Session
 from app.configuration.catalog import CATALOG, CATALOG_BY_KEY, ThresholdDefinition
 from app.configuration.errors import (
     ConfigNotFoundError,
+    ConfigValueNotAllowedError,
     ConfigValueOutOfBoundsError,
     UnknownConfigKeyError,
 )
 from app.models.config import ConfigThreshold
+
+NUMERIC_VALUE_TYPES = ("int", "float")
 
 
 def _utcnow() -> datetime:
@@ -36,15 +39,41 @@ def _check_bounds(definition: ThresholdDefinition, value: float) -> None:
         raise ConfigValueOutOfBoundsError(definition.key, value, low, high)
 
 
-def validate_overrides(overrides: Dict[str, float]) -> None:
-    """Raises UnknownConfigKeyError / ConfigValueOutOfBoundsError for a
-    per-run or rerun config_overrides payload, before it's ever stored on
-    a Run -- used by both POST /runs and POST /runs/{id}/rerun."""
+def _validate_value(definition: ThresholdDefinition, value: Any) -> None:
+    """Dispatches to the right check for this key's value_type: numeric
+    keys validate against `bounds` (unchanged, existing behavior); "enum"
+    keys (blast.mode, blast.remote_database) validate against `choices`
+    instead; "string" keys (blast.entrez_query) are free text -- nothing
+    to validate beyond having been given a value at all."""
+    if definition.value_type in NUMERIC_VALUE_TYPES:
+        _check_bounds(definition, float(value))
+    elif definition.value_type == "enum":
+        if value not in definition.choices:
+            raise ConfigValueNotAllowedError(definition.key, value, definition.choices)
+    # "string": no further validation -- e.g. blast.entrez_query is free-text.
+
+
+def value_of(row: ConfigThreshold) -> Any:
+    """The single place that reads a ConfigThreshold row back as its
+    catalog-typed value -- `row.value` (float) for numeric keys,
+    `row.value_text` (str) for "enum"/"string" keys. Every caller that
+    used to read `row.value` directly (service functions below,
+    app.api.config's response mapping) goes through this instead, so the
+    two-column split stays an implementation detail of this module."""
+    definition = CATALOG_BY_KEY[row.key]
+    return row.value if definition.value_type in NUMERIC_VALUE_TYPES else row.value_text
+
+
+def validate_overrides(overrides: Dict[str, Any]) -> None:
+    """Raises UnknownConfigKeyError / ConfigValueOutOfBoundsError /
+    ConfigValueNotAllowedError for a per-run or rerun config_overrides
+    payload, before it's ever stored on a Run -- used by both POST /runs
+    and POST /runs/{id}/rerun."""
     for key, value in overrides.items():
         definition = CATALOG_BY_KEY.get(key)
         if definition is None:
             raise UnknownConfigKeyError(key)
-        _check_bounds(definition, value)
+        _validate_value(definition, value)
 
 
 def ensure_seeded(db: Session) -> None:
@@ -58,7 +87,15 @@ def ensure_seeded(db: Session) -> None:
         return
     now = _utcnow()
     for definition in missing:
-        db.add(ConfigThreshold(key=definition.key, value=definition.default, updated_at=now))
+        is_numeric = definition.value_type in NUMERIC_VALUE_TYPES
+        db.add(
+            ConfigThreshold(
+                key=definition.key,
+                value=definition.default if is_numeric else None,
+                value_text=None if is_numeric else definition.default,
+                updated_at=now,
+            )
+        )
     db.commit()
 
 
@@ -67,14 +104,17 @@ def list_config(db: Session) -> List[ConfigThreshold]:
     return db.query(ConfigThreshold).order_by(ConfigThreshold.key).all()
 
 
-def update_config(db: Session, config_id: str, value: float) -> ConfigThreshold:
+def update_config(db: Session, config_id: str, value: Any) -> ConfigThreshold:
     ensure_seeded(db)
     row = db.get(ConfigThreshold, config_id)
     if row is None:
         raise ConfigNotFoundError(config_id)
     definition = CATALOG_BY_KEY[row.key]
-    _check_bounds(definition, value)
-    row.value = value
+    _validate_value(definition, value)
+    if definition.value_type in NUMERIC_VALUE_TYPES:
+        row.value = float(value)
+    else:
+        row.value_text = str(value)
     row.updated_at = _utcnow()
     db.commit()
     db.refresh(row)
@@ -82,15 +122,16 @@ def update_config(db: Session, config_id: str, value: float) -> ConfigThreshold:
 
 
 def effective_thresholds(
-    db: Session, overrides: Optional[Dict[str, float]] = None
-) -> Dict[str, float]:
+    db: Session, overrides: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """The global config's current values (seeded defaults, possibly
     edited via PUT /config/{id}), with `overrides` (a Run's own
     config_overrides, if any) layered on top for just this call --
     "Global defaults apply unless overridden" (CLAUDE.md's Configuration
-    model). Returns a flat {catalog_key: value} dict."""
+    model). Returns a flat {catalog_key: value} dict -- floats for
+    numeric keys, strings for "enum"/"string" keys."""
     ensure_seeded(db)
-    values = {row.key: row.value for row in db.query(ConfigThreshold).all()}
+    values = {row.key: value_of(row) for row in db.query(ConfigThreshold).all()}
     for key, value in (overrides or {}).items():
         if key not in CATALOG_BY_KEY:
             raise UnknownConfigKeyError(key)

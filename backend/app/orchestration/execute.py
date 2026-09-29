@@ -83,7 +83,11 @@ from app.pipeline.usability_check import (
     check_usability_from_consensus,
     check_usability_from_single_read,
 )
-from app.reference.publish import NoActiveReferenceDatabaseError, search_active_reference_database
+from app.reference.publish import (
+    NoActiveReferenceDatabaseError,
+    RemoteBlastNotImplementedError,
+    search_active_reference_database,
+)
 from app.schemas.format_check import FileFormatCheck
 from app.schemas.report import ReportInput
 
@@ -373,7 +377,12 @@ def continue_run_from_extraction(
     blast_kwargs = config_service.kwargs_for_stage(effective, "blast")
     try:
         blast_result = search_active_reference_database(query_fasta_path, db, **blast_kwargs)
-    except NoActiveReferenceDatabaseError as exc:
+    except (NoActiveReferenceDatabaseError, RemoteBlastNotImplementedError) as exc:
+        # Both are operational stops, not biological ones: no reference DB
+        # ever published, or (blast.mode's own "remote" default, until
+        # remote dispatch is actually built -- see
+        # RemoteBlastNotImplementedError's own docstring) remote search
+        # requested but not yet implemented.
         _persist_stage(db, run, "blast", status="failed", output={"error": str(exc)})
         return _stop_run(db, run)
 

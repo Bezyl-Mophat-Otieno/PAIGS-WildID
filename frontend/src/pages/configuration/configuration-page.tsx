@@ -4,11 +4,11 @@ import { Info } from "lucide-react"
 import { useForm } from "react-hook-form"
 import { toast } from "sonner"
 import { listConfig, updateConfig } from "@/api/config"
+import { ConfigValueControl } from "@/components/config/config-value-control"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Form, FormControl, FormField, FormItem, FormMessage } from "@/components/ui/form"
-import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useAuth } from "@/context/auth-context"
@@ -16,9 +16,9 @@ import { groupConfigByStage, toFieldName } from "@/lib/config-groups"
 import { getErrorMessage } from "@/lib/errors"
 import type { ConfigItem } from "@/types/api"
 
-type FormValues = { thresholds: Record<string, number> }
+type FormValues = { thresholds: Record<string, number | string> }
 
-function buildDefaults(items: ConfigItem[]): Record<string, number> {
+function buildDefaults(items: ConfigItem[]): Record<string, number | string> {
   return Object.fromEntries(items.map((item) => [toFieldName(item.key), item.value]))
 }
 
@@ -123,11 +123,10 @@ export function ConfigurationPage() {
                               <FormItem>
                                 <div className="flex items-center gap-2">
                                   <FormControl>
-                                    <Input
-                                      type="number"
-                                      step={item.value_type === "int" ? 1 : "any"}
-                                      value={field.value as number}
-                                      onChange={(e) => field.onChange(e.target.valueAsNumber)}
+                                    <ConfigValueControl
+                                      item={item}
+                                      value={field.value as number | string}
+                                      onChange={field.onChange}
                                       onBlur={field.onBlur}
                                     />
                                   </FormControl>

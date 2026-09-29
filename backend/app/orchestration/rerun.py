@@ -26,7 +26,7 @@ stays auth-agnostic (it just records whatever id it's given) the same
 way app.orchestration.execute does.
 """
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 
@@ -47,7 +47,7 @@ def create_rerun(
     db: Session,
     *,
     owner_id: str,
-    config_overrides: Optional[Dict[str, float]] = None,
+    config_overrides: Optional[Dict[str, Any]] = None,
     sample_id: Optional[str] = None,
 ) -> Run:
     source = db.get(Run, source_run_id)
