@@ -186,6 +186,81 @@ class TestContinueRunFromExtractionTwoReadSuccess:
         assert sanity_stage.stage_metadata.get("single_read_reason") is None
 
 
+class TestStagesAreDurablyCommittedNotJustFlushed:
+    """Each _persist_stage() call now commits, not just flushes -- proven
+    here by reading the row back through a completely separate connection
+    to the same on-disk SQLite file, not just the same session's identity
+    map (which a flush alone would already satisfy). This durability
+    matters specifically because a slow later stage (Stage 9's remote
+    BLAST search can legitimately block for minutes) must not hold
+    earlier, genuinely-finished stages hostage inside one long-lived,
+    uncommitted transaction -- see app.orchestration.execute's own
+    _persist_stage docstring and app.db's WAL-mode comment for the
+    concrete failure this caused."""
+
+    def test_an_earlier_completed_stage_survives_an_unhandled_crash_in_a_later_one(
+        self, db_session, tmp_path, monkeypatch
+    ):
+        """The real bug this guards against: Stage 9's remote BLAST search
+        raising an exception that never reaches _stop_run()/the final
+        success commit at all (this test's stand-in for that -- a bare,
+        uncaught exception genuinely propagating out, same as the actual
+        production crash did) must not roll back Stage 3's already-genuine
+        "sanity_check completed" result along with it. A same-session
+        query wouldn't prove this (flush alone already satisfies that) --
+        only a totally separate connection, opened *after* the crash,
+        proves the earlier stage's row was actually committed to disk
+        rather than sitting in a transaction that just got discarded.
+        """
+        import app.orchestration.execute as execute_module
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from app.models.stage import Stage
+        from app.orchestration.execute import continue_run_from_extraction
+
+        def _crash(*args, **kwargs):
+            raise Exception("simulated unhandled crash, e.g. a real disk I/O error")
+
+        # trim_reads_for_files runs right after sanity_check completes --
+        # by the time this raises, sanity_check's own _persist_stage() call
+        # has already happened, but nothing has reached _stop_run() or the
+        # final success commit.
+        monkeypatch.setattr(execute_module, "trim_reads_for_files", _crash)
+
+        good_seq = "".join(["ATCG"[i % 4] for i in range(700)])
+        good = ReadExtraction(raw_sequence=good_seq, raw_length=700, quality_scores=[40] * 700)
+        extractions = {"forward": good}
+        format_check = _format_check(["forward"])
+        run = _make_run(db_session, original_filenames=["forward.ab1"])
+
+        with pytest.raises(Exception, match="simulated unhandled crash"):
+            continue_run_from_extraction(
+                run, format_check, extractions, db_session, tmp_path / "run_storage"
+            )
+
+        # A brand-new engine/session against the same file, opened after
+        # the crash -- if sanity_check had only been flushed (not
+        # committed), this independent connection would see nothing, since
+        # the crash never reached a commit point.
+        other_engine = create_engine(
+            f"sqlite:///{tmp_path / 'test_reference.db'}",
+            connect_args={"check_same_thread": False},
+        )
+        OtherSession = sessionmaker(bind=other_engine)
+        other_session = OtherSession()
+        try:
+            stage = (
+                other_session.query(Stage)
+                .filter(Stage.run_id == run.id, Stage.stage_type == "sanity_check")
+                .one()
+            )
+            assert stage.status == "completed"
+        finally:
+            other_session.close()
+            other_engine.dispose()
+
+
 class TestContinueRunFromExtractionBranching:
     def test_both_reads_failing_sanity_stops_the_run(self, db_session, tmp_path):
         from app.orchestration.execute import continue_run_from_extraction

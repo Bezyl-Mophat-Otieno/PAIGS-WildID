@@ -20,11 +20,10 @@ from types import SimpleNamespace
 import pytest
 
 from app.models.reference import ReferenceDatabaseVersion, ReferenceEntry
-from app.pipeline.blast import search_blast
+from app.pipeline.blast import RemoteBlastSearchError, search_blast
 from app.reference.publish import (
     InvalidReferenceFastaError,
     NoActiveReferenceDatabaseError,
-    RemoteBlastNotImplementedError,
     get_active_version,
     publish_reference_db,
     search_active_reference_database,
@@ -252,32 +251,21 @@ class TestSearchActiveReferenceDatabase:
     tests/test_fasta.py.
     """
 
-    # mode="local" is passed explicitly throughout this class: this file
-    # tests the local reference-DB search path specifically, but
+    # mode="local" is passed explicitly throughout most of this class:
     # blast.mode's own catalog default is now "remote" (see
     # app.configuration.catalog) -- the remote-vs-local BLAST search
-    # decision. Remote dispatch isn't implemented yet (see
-    # RemoteBlastNotImplementedError), so leaving mode unspecified here
-    # would raise that instead of exercising the local path this class is
-    # actually about.
+    # decision -- so leaving mode unspecified would exercise the remote
+    # path instead of the local one most of these tests are actually
+    # about. The remote path itself is covered by TestSearchActiveReferenceDatabaseRemoteMode
+    # below, with subprocess mocked the same way _mock_makeblastdb does
+    # for publishing (no real network call, no dependency on NCBI being
+    # reachable from wherever these tests run).
 
     def test_raises_when_nothing_has_been_published_yet(self, tmp_path, db_session):
         query = FIXTURES_DIR / "synthetic_blast_query_exact_match.fasta"
 
         with pytest.raises(NoActiveReferenceDatabaseError):
             search_active_reference_database(query, db_session, mode="local")
-
-    def test_raises_remote_not_implemented_when_mode_is_left_at_its_default(
-        self, tmp_path, db_session
-    ):
-        """blast.mode's catalog default is "remote" -- confirms that
-        calling this function with no mode kwarg (i.e. whatever its own
-        default is) surfaces the not-implemented error rather than
-        silently searching locally."""
-        query = FIXTURES_DIR / "synthetic_blast_query_exact_match.fasta"
-
-        with pytest.raises(RemoteBlastNotImplementedError):
-            search_active_reference_database(query, db_session)
 
     def test_searches_against_the_active_version(self, tmp_path, db_session):
         fasta = _write_fasta(tmp_path, "reference_v1.fasta", SYNTHETIC_FASTA)
@@ -314,3 +302,122 @@ class TestSearchActiveReferenceDatabase:
         result = search_active_reference_database(query, db_session, max_hits=1, mode="local")
 
         assert len(result.hits) <= 1
+
+
+FAKE_REMOTE_STDOUT = "SYNTH001\t99.71\t138\t0.0\t250.0\tSYNTH001 Panthera leo\n"
+
+
+def _mock_remote_blastn(monkeypatch, *, stdout=FAKE_REMOTE_STDOUT, returncode=0, stderr=""):
+    """Mocks the subprocess boundary in app.pipeline.blast, same technique
+    _mock_makeblastdb uses above -- a real network round trip to NCBI has
+    no place in a unit test (slow, non-deterministic, requires the test
+    runner to have internet access at all). Also stubs binary discovery
+    (app.pipeline.blast.shutil.which, the same seam test_blast.py's own
+    TestFindBlastBinary tests use) so these tests pass regardless of
+    whether a real blastn binary happens to be installed wherever they
+    run -- unlike test_blast.py's own tests, which deliberately exercise
+    the real binaries. Returns the list of commands actually invoked, so
+    a test can assert on the exact blastn flags."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append({"cmd": cmd, "kwargs": kwargs})
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr("app.pipeline.blast.shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("app.pipeline.blast.subprocess.run", fake_run)
+    return calls
+
+
+class TestSearchActiveReferenceDatabaseRemoteMode:
+    """mode="remote" (blast.mode's own catalog default): no reference DB
+    lookup at all -- dispatches straight to search_blast_remote(), which
+    never touches get_active_version()/ReferenceDatabaseVersion."""
+
+    def test_default_mode_dispatches_to_remote_search(self, db_session, monkeypatch):
+        calls = _mock_remote_blastn(monkeypatch)
+        query = FIXTURES_DIR / "synthetic_blast_query_exact_match.fasta"
+
+        result = search_active_reference_database(query, db_session)
+
+        assert result.search_mode == "remote"
+        assert result.hits[0].species == "Panthera leo"
+        assert len(calls) == 1
+
+    def test_builds_the_remote_blastn_command_with_no_local_db_prefix(
+        self, db_session, monkeypatch
+    ):
+        calls = _mock_remote_blastn(monkeypatch)
+        query = FIXTURES_DIR / "synthetic_blast_query_exact_match.fasta"
+
+        search_active_reference_database(query, db_session, remote_database="refseq_rna")
+
+        cmd = calls[0]["cmd"]
+        assert "-remote" in cmd
+        assert "-db" in cmd
+        assert cmd[cmd.index("-db") + 1] == "refseq_rna"
+
+    def test_entrez_query_is_passed_through_when_given(self, db_session, monkeypatch):
+        calls = _mock_remote_blastn(monkeypatch)
+        query = FIXTURES_DIR / "synthetic_blast_query_exact_match.fasta"
+
+        search_active_reference_database(
+            query, db_session, entrez_query="Chordata[Organism]"
+        )
+
+        cmd = calls[0]["cmd"]
+        assert "-entrez_query" in cmd
+        assert cmd[cmd.index("-entrez_query") + 1] == "Chordata[Organism]"
+
+    def test_entrez_query_omitted_when_blank(self, db_session, monkeypatch):
+        calls = _mock_remote_blastn(monkeypatch)
+        query = FIXTURES_DIR / "synthetic_blast_query_exact_match.fasta"
+
+        search_active_reference_database(query, db_session, entrez_query="")
+
+        assert "-entrez_query" not in calls[0]["cmd"]
+
+    def test_result_records_remote_evidence_for_the_audit_trail(self, db_session, monkeypatch):
+        _mock_remote_blastn(monkeypatch)
+        query = FIXTURES_DIR / "synthetic_blast_query_exact_match.fasta"
+
+        result = search_active_reference_database(
+            query, db_session, remote_database="nt", entrez_query="Chordata[Organism]"
+        )
+
+        assert result.remote_database == "nt"
+        assert result.entrez_query == "Chordata[Organism]"
+        assert result.queried_at is not None
+        assert result.raw_response == FAKE_REMOTE_STDOUT
+        assert "not version-pinned" in result.database_version
+
+    def test_raises_remote_blast_search_error_on_nonzero_exit(self, db_session, monkeypatch):
+        _mock_remote_blastn(monkeypatch, returncode=1, stderr="NCBI rejected the request")
+        query = FIXTURES_DIR / "synthetic_blast_query_exact_match.fasta"
+
+        with pytest.raises(RemoteBlastSearchError, match="NCBI rejected the request"):
+            search_active_reference_database(query, db_session)
+
+    def test_raises_remote_blast_search_error_on_timeout(self, db_session, monkeypatch):
+        import subprocess
+
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs.get("timeout"))
+
+        monkeypatch.setattr("app.pipeline.blast.shutil.which", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr("app.pipeline.blast.subprocess.run", fake_run)
+        query = FIXTURES_DIR / "synthetic_blast_query_exact_match.fasta"
+
+        with pytest.raises(RemoteBlastSearchError, match="timed out"):
+            search_active_reference_database(query, db_session, remote_timeout_seconds=5)
+
+    def test_never_looks_up_a_local_reference_database_version(self, db_session, monkeypatch):
+        """No reference DB has ever been published in this test (unlike
+        the local-mode tests above), yet the remote path must still
+        succeed -- proof it never calls get_active_version()."""
+        _mock_remote_blastn(monkeypatch)
+        query = FIXTURES_DIR / "synthetic_blast_query_exact_match.fasta"
+
+        result = search_active_reference_database(query, db_session)
+
+        assert result.search_mode == "remote"

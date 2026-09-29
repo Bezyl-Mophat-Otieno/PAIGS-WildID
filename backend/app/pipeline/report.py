@@ -203,13 +203,37 @@ def generate_report(report_input: ReportInput) -> bytes:
 
     blast = report_input.blast
     story.append(Paragraph("BLAST Comparison", styles["Heading2"]))
-    story.append(
-        Paragraph(
-            f"Reference database version: {blast.database_version}; "
-            f"query length {blast.query_length} bp; {len(blast.hits)} hit(s)",
-            styles["Normal"],
+    if blast.search_mode == "remote":
+        queried_at_str = (
+            blast.queried_at.strftime("%Y-%m-%d %H:%M UTC") if blast.queried_at else "unknown"
         )
-    )
+        story.append(
+            Paragraph(
+                f"<b>Remote search</b> -- NCBI database: {blast.remote_database}; "
+                f"queried: {queried_at_str}"
+                + (f"; Entrez restriction: {blast.entrez_query}" if blast.entrez_query else "")
+                + f"; query length {blast.query_length} bp; {len(blast.hits)} hit(s).",
+                styles["Normal"],
+            )
+        )
+        story.append(
+            Paragraph(
+                "NCBI's own database changes over time, so this exact search is not "
+                "guaranteed to reproduce identically later -- the full raw response "
+                "this run received is retained in this run's own stored Stage 9 "
+                "record as the audit trail's evidence of exactly what NCBI returned, "
+                "at the moment it was queried.",
+                styles["Italic"],
+            )
+        )
+    else:
+        story.append(
+            Paragraph(
+                f"<b>Local search</b> -- reference database version: {blast.database_version}; "
+                f"query length {blast.query_length} bp; {len(blast.hits)} hit(s).",
+                styles["Normal"],
+            )
+        )
     if blast.hits:
         table_data = [["Rank", "Species", "Identity %", "Coverage %", "E-value", "Bit score", "Accession"]]
         for hit in blast.hits:

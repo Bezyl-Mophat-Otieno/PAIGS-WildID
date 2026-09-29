@@ -32,7 +32,7 @@ left at its (None, None) default.
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
-from app.pipeline.blast import DEFAULT_MAX_HITS
+from app.pipeline.blast import DEFAULT_MAX_HITS, DEFAULT_REMOTE_TIMEOUT_SECONDS
 from app.pipeline.identification import (
     DEFAULT_AMBIGUOUS_MARGIN_PCT,
     DEFAULT_MIN_COVERAGE_PCT,
@@ -192,6 +192,16 @@ CATALOG = [
         "uncultured[Organism]' to strip contamination-prone entries, or "
         "a taxonomy restriction like 'Chordata[Organism]'. Blank means "
         "no restriction. Ignored when blast.mode is 'local'.",
+    ),
+    _entry(
+        "blast", "remote_timeout_seconds", DEFAULT_REMOTE_TIMEOUT_SECONDS,
+        "Remote search timeout (seconds)",
+        "How long to wait for NCBI's remote BLAST service before giving "
+        "up and stopping the run at Stage 9. An engineering/operational "
+        "judgment call (network conditions, NCBI queue depth), not a "
+        "biological threshold. Ignored when blast.mode is 'local', which "
+        "has no network round trip to bound.",
+        (1, None),
     ),
     _entry(
         "identification", "min_identity_pct", DEFAULT_MIN_IDENTITY_PCT,

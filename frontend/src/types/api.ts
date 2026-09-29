@@ -174,7 +174,20 @@ export interface BlastHit {
   accession: string
 }
 export type BlastOutput =
-  | { hits: BlastHit[]; database_version: string; query_length: number }
+  | {
+      hits: BlastHit[]
+      database_version: string
+      query_length: number
+      // "local" or "remote" -- which BLAST search mode actually produced
+      // this result (see CLAUDE.md's Stage 9 section). Optional since a
+      // Run executed before this distinction existed has no such field.
+      search_mode?: "local" | "remote"
+      // Remote-mode-only evidence, all undefined for a local-mode result.
+      remote_database?: string
+      entrez_query?: string | null
+      queried_at?: string
+      raw_response?: string
+    }
   | { error: string }
 export interface BlastMetadata {
   thresholds: { max_hits: number }

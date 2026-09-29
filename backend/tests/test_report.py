@@ -173,6 +173,57 @@ class TestGenerateReport:
         assert "Panthera leo" in text
         assert "Panthera pardus" in text
 
+    def test_local_search_mode_shows_the_reference_database_version(self):
+        """_base_report_input's default BlastSearchResult omits search_mode,
+        which defaults to "local" -- confirms that's still rendered exactly
+        as before this remote-vs-local distinction existed."""
+        text = _extract_text(generate_report(_base_report_input()))
+
+        assert "Local search" in text
+        assert "reference database version: v3" in text.lower()
+
+    def test_remote_search_mode_shows_ncbi_database_and_query_timestamp(self):
+        report_input = _base_report_input(
+            blast=BlastSearchResult(
+                hits=[_hit(1, "Panthera leo", 99.71, 98.2)],
+                database_version="NCBI nt (remote, live -- not version-pinned)",
+                query_length=680,
+                search_mode="remote",
+                remote_database="nt",
+                queried_at=datetime(2026, 9, 29, 18, 30, 0, tzinfo=timezone.utc),
+                raw_response="REF001\t99.71\t680\t0.0\t1240.0\tREF001 Panthera leo\n",
+            )
+        )
+
+        text = _extract_text(generate_report(report_input))
+
+        assert "Remote search" in text
+        assert "nt" in text
+        assert "2026-09-29" in text
+        # The raw NCBI response text itself is retained in Stage 9's own
+        # stored output for the audit trail, not dumped into the PDF
+        # narrative -- the report only needs to say that evidence exists.
+        assert "REF001" not in text
+        assert "audit trail" in text.lower()
+
+    def test_remote_search_mode_shows_entrez_query_when_given(self):
+        report_input = _base_report_input(
+            blast=BlastSearchResult(
+                hits=[_hit(1, "Panthera leo", 99.71, 98.2)],
+                database_version="NCBI nt (remote, live -- not version-pinned)",
+                query_length=680,
+                search_mode="remote",
+                remote_database="nt",
+                entrez_query="Chordata[Organism]",
+                queried_at=datetime(2026, 9, 29, 18, 30, 0, tzinfo=timezone.utc),
+                raw_response="REF001\t99.71\t680\t0.0\t1240.0\tREF001 Panthera leo\n",
+            )
+        )
+
+        text = _extract_text(generate_report(report_input))
+
+        assert "Chordata[Organism]" in text
+
     def test_reports_review_required_with_reason(self):
         report_input = _base_report_input(
             identification=IdentificationResult(

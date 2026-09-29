@@ -183,4 +183,5 @@ class TestKwargsForStage:
             "mode": "remote",
             "remote_database": "nt",
             "entrez_query": "",
+            "remote_timeout_seconds": 300,
         }

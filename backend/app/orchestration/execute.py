@@ -83,11 +83,7 @@ from app.pipeline.usability_check import (
     check_usability_from_consensus,
     check_usability_from_single_read,
 )
-from app.reference.publish import (
-    NoActiveReferenceDatabaseError,
-    RemoteBlastNotImplementedError,
-    search_active_reference_database,
-)
+from app.reference.publish import search_active_reference_database
 from app.schemas.format_check import FileFormatCheck
 from app.schemas.report import ReportInput
 
@@ -138,7 +134,28 @@ def _persist_stage(
         # and clobber the real stopping point a stop-triggering persist
         # just recorded.
         run.current_stage = stage_type
-    db.flush()
+    # A real commit, not just a flush: each completed stage becomes
+    # durable the moment it's recorded, rather than sitting inside one
+    # long-lived transaction spanning the entire run. That distinction
+    # didn't matter while every stage took milliseconds -- it matters a
+    # lot now that Stage 9's remote BLAST search can legitimately block
+    # for minutes; holding a write transaction open that whole time is
+    # exactly what produced a genuine SQLite "disk I/O error" crash under
+    # concurrent access (see app.db's own WAL-mode comment). Committing
+    # here also means an unexpected crash mid-pipeline (this one, or any
+    # future one) never loses stages that had already genuinely finished.
+    # A real commit, not just a flush: each completed stage becomes
+    # durable the moment it's recorded, rather than sitting inside one
+    # long-lived transaction spanning the entire run. That distinction
+    # didn't matter while every stage took milliseconds -- it matters a
+    # lot now that Stage 9's remote BLAST search can legitimately block
+    # for minutes; holding a write transaction open that whole time is
+    # exactly what produced a genuine SQLite "disk I/O error" crash under
+    # concurrent access (see app.db's own WAL-mode comment). Committing
+    # here also means an unexpected crash mid-pipeline (this one, or any
+    # future one) never loses stages that had already genuinely finished.
+    db.commit()
+    db.refresh(run)
     return stage
 
 
@@ -377,12 +394,16 @@ def continue_run_from_extraction(
     blast_kwargs = config_service.kwargs_for_stage(effective, "blast")
     try:
         blast_result = search_active_reference_database(query_fasta_path, db, **blast_kwargs)
-    except (NoActiveReferenceDatabaseError, RemoteBlastNotImplementedError) as exc:
-        # Both are operational stops, not biological ones: no reference DB
-        # ever published, or (blast.mode's own "remote" default, until
-        # remote dispatch is actually built -- see
-        # RemoteBlastNotImplementedError's own docstring) remote search
-        # requested but not yet implemented.
+    except RuntimeError as exc:
+        # Deliberately the broad RuntimeError, not just
+        # NoActiveReferenceDatabaseError/RemoteBlastSearchError (both of
+        # which are themselves RuntimeErrors): the BLAST+ binary being
+        # missing entirely (app.pipeline.blast._find_blast_binary, local
+        # or remote path alike) is exactly the same class of operational,
+        # not-biological stop -- a deployment/environment problem, not a
+        # verdict about the sample's own DNA -- and must end the run the
+        # same clean way rather than crash the request with an unhandled
+        # exception.
         _persist_stage(db, run, "blast", status="failed", output={"error": str(exc)})
         return _stop_run(db, run)
 

@@ -32,10 +32,26 @@ harmless (and unused) for a normal system install where BLAST's shared
 libraries are already registered with the system linker, but required
 for the extracted-without-root dev layout, where they aren't on the
 default linker search path.
+
+Remote search (`search_blast_remote`): the same `blastn` binary, given
+`-remote` instead of a local `-db <prefix>`, submits the query to NCBI's
+own hosted databases over the network instead of a locally-built index --
+the "remote" half of the remote-vs-local BLAST search decision (see
+claude/remote-blast-search.md / CLAUDE.md's Stage 9 section). No
+`makeblastdb` step, no local index -- but a real network round trip to
+NCBI, so it needs its own timeout (`blast.remote_timeout_seconds`) and its
+own error type (`RemoteBlastSearchError`) distinct from a local search's
+"binary/database not found" failures. Its result is marked
+`search_mode="remote"` and carries the exact raw response text plus the
+moment it was queried, since (unlike a local search's pinned reference DB
+version) NCBI's own database changes over time and the same query run
+again later isn't guaranteed to reproduce -- that raw response is the
+audit trail's substitute for reproducibility.
 """
 import os
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
 
@@ -44,6 +60,21 @@ from Bio import SeqIO
 from app.schemas.blast import BlastHit, BlastSearchResult
 
 DEFAULT_MAX_HITS = 10
+# A real NCBI remote search against a large database (nt especially --
+# blast.remote_database's own broadest, slowest option) commonly takes
+# several minutes under normal NCBI server load, not seconds -- 120s
+# turned out to be too short in practice (a real search against nt timed
+# out at exactly that default). 300s is still a guess pending real
+# operational experience, not a number NCBI documents as a guarantee --
+# revisit once actual observed remote search times are in hand.
+DEFAULT_REMOTE_TIMEOUT_SECONDS = 300
+
+
+class RemoteBlastSearchError(RuntimeError):
+    """An operational failure of a remote BLAST search -- a network/NCBI-side
+    error, or the request exceeding blast.remote_timeout_seconds. Distinct
+    from a query that legitimately found no hits, which is a normal, empty
+    BlastSearchResult, not an error."""
 
 
 def _find_blast_binary(name: str) -> str:
@@ -107,6 +138,40 @@ def build_reference_database(reference_fasta: Path, output_prefix: Path, *, titl
         raise RuntimeError(f"makeblastdb failed: {result.stderr.strip()}")
 
 
+def _query_length(query_fasta: Path) -> int:
+    query_records = list(SeqIO.parse(str(query_fasta), "fasta"))
+    if not query_records:
+        raise ValueError(f"No sequences found in query FASTA: {query_fasta}")
+    return len(query_records[0].seq)
+
+
+def _parse_hits(stdout: str, query_length: int) -> List[BlastHit]:
+    """Shared by the local and remote search paths -- blastn's `-outfmt 6`
+    tabular output means the exact same line shape either way; only how
+    blastn was invoked (and what gets recorded as evidence afterward)
+    differs between them."""
+    hits: List[BlastHit] = []
+    for rank, line in enumerate(
+        (ln for ln in stdout.splitlines() if ln.strip()), start=1
+    ):
+        sseqid, pident, length, evalue, bitscore, stitle = line.split("\t", 5)
+        species = (
+            stitle[len(sseqid):].strip() if stitle.startswith(sseqid) else stitle.strip()
+        )
+        hits.append(
+            BlastHit(
+                rank=rank,
+                species=species,
+                identity=float(pident),
+                coverage=(float(length) / query_length * 100) if query_length else 0.0,
+                evalue=float(evalue),
+                bit_score=float(bitscore),
+                accession=sseqid,
+            )
+        )
+    return hits
+
+
 def search_blast(
     query_fasta: Path,
     db_prefix: Path,
@@ -115,16 +180,13 @@ def search_blast(
     max_hits: int = DEFAULT_MAX_HITS,
 ) -> BlastSearchResult:
     """Search `query_fasta` (Stage 8's output, expected to hold exactly one
-    sequence) against an already-built BLAST database, returning a ranked
-    hit list. `database_version` is caller-supplied metadata -- CLAUDE.md
-    requires the reference DB version used to be recorded per run, and
-    that's tracked alongside the curated FASTA itself, not something
-    blastn reports.
+    sequence) against an already-built local BLAST database, returning a
+    ranked hit list. `database_version` is caller-supplied metadata --
+    CLAUDE.md requires the reference DB version used to be recorded per
+    run, and that's tracked alongside the curated FASTA itself, not
+    something blastn reports.
     """
-    query_records = list(SeqIO.parse(str(query_fasta), "fasta"))
-    if not query_records:
-        raise ValueError(f"No sequences found in query FASTA: {query_fasta}")
-    query_length = len(query_records[0].seq)
+    query_length = _query_length(query_fasta)
 
     binary = _find_blast_binary("blastn")
     result = subprocess.run(
@@ -142,28 +204,77 @@ def search_blast(
     if result.returncode != 0:
         raise RuntimeError(f"blastn failed: {result.stderr.strip()}")
 
-    hits: List[BlastHit] = []
-    for rank, line in enumerate(
-        (ln for ln in result.stdout.splitlines() if ln.strip()), start=1
-    ):
-        sseqid, pident, length, evalue, bitscore, stitle = line.split("\t", 5)
-        species = (
-            stitle[len(sseqid):].strip() if stitle.startswith(sseqid) else stitle.strip()
+    return BlastSearchResult(
+        hits=_parse_hits(result.stdout, query_length),
+        database_version=database_version,
+        query_length=query_length,
+        search_mode="local",
+    )
+
+
+def search_blast_remote(
+    query_fasta: Path,
+    *,
+    remote_database: str,
+    entrez_query: str = "",
+    max_hits: int = DEFAULT_MAX_HITS,
+    timeout_seconds: int = DEFAULT_REMOTE_TIMEOUT_SECONDS,
+) -> BlastSearchResult:
+    """Search `query_fasta` against one of NCBI's own hosted nucleotide
+    databases (`nt`, `core_nt`, `refseq_rna`, `refseq_genomic`) via
+    `blastn -remote` -- no local index, a real network round trip to NCBI
+    instead. `entrez_query`, if given, narrows/widens the search scope at
+    NCBI's end (e.g. excluding environmental/uncultured entries, or
+    restricting to a taxonomic group) rather than filtering the results
+    afterward.
+
+    Raises RemoteBlastSearchError on a network/NCBI-side failure or a
+    timeout -- an operational stop, same treatment as
+    NoActiveReferenceDatabaseError on the local path (see
+    app.orchestration.execute's Stage 9 handling).
+    """
+    query_length = _query_length(query_fasta)
+
+    binary = _find_blast_binary("blastn")
+    command = [
+        binary,
+        "-query", str(query_fasta),
+        "-db", remote_database,
+        "-remote",
+        "-outfmt", "6 sseqid pident length evalue bitscore stitle",
+        "-max_target_seqs", str(max_hits),
+    ]
+    if entrez_query:
+        command.extend(["-entrez_query", entrez_query])
+
+    queried_at = datetime.now(timezone.utc)
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            env=_subprocess_env(binary),
+            timeout=timeout_seconds,
         )
-        hits.append(
-            BlastHit(
-                rank=rank,
-                species=species,
-                identity=float(pident),
-                coverage=(float(length) / query_length * 100) if query_length else 0.0,
-                evalue=float(evalue),
-                bit_score=float(bitscore),
-                accession=sseqid,
-            )
+    except subprocess.TimeoutExpired as exc:
+        raise RemoteBlastSearchError(
+            f"Remote BLAST search against NCBI's {remote_database!r} database "
+            f"timed out after {timeout_seconds}s."
+        ) from exc
+
+    if result.returncode != 0:
+        raise RemoteBlastSearchError(
+            f"Remote BLAST search against NCBI's {remote_database!r} database "
+            f"failed: {result.stderr.strip()}"
         )
 
     return BlastSearchResult(
-        hits=hits,
-        database_version=database_version,
+        hits=_parse_hits(result.stdout, query_length),
+        database_version=f"NCBI {remote_database} (remote, live -- not version-pinned)",
         query_length=query_length,
+        search_mode="remote",
+        remote_database=remote_database,
+        entrez_query=entrez_query or None,
+        queried_at=queried_at,
+        raw_response=result.stdout,
     )

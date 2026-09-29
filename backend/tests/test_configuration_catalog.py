@@ -7,7 +7,7 @@ module's DEFAULT_* constant (never retyped, so it can't silently drift),
 and every catalog key is unique and well-formed.
 """
 from app.configuration.catalog import CATALOG, CATALOG_BY_KEY
-from app.pipeline.blast import DEFAULT_MAX_HITS
+from app.pipeline.blast import DEFAULT_MAX_HITS, DEFAULT_REMOTE_TIMEOUT_SECONDS
 from app.pipeline.identification import (
     DEFAULT_AMBIGUOUS_MARGIN_PCT,
     DEFAULT_MIN_COVERAGE_PCT,
@@ -33,6 +33,7 @@ EXPECTED_DEFAULTS = {
     "usability_check.min_mean_quality": DEFAULT_MIN_MEAN_QUALITY,
     "usability_check.max_ambiguous_proportion": DEFAULT_MAX_AMBIGUOUS_PROPORTION,
     "blast.max_hits": DEFAULT_MAX_HITS,
+    "blast.remote_timeout_seconds": DEFAULT_REMOTE_TIMEOUT_SECONDS,
     "identification.min_identity_pct": DEFAULT_MIN_IDENTITY_PCT,
     "identification.min_coverage_pct": DEFAULT_MIN_COVERAGE_PCT,
     "identification.ambiguous_margin_pct": DEFAULT_AMBIGUOUS_MARGIN_PCT,
@@ -76,6 +77,7 @@ def test_value_type_matches_the_default_constants_own_python_type():
         "orientation.min_overlap_length",
         "usability_check.min_length",
         "blast.max_hits",
+        "blast.remote_timeout_seconds",
     }
     enum_keys = {"blast.mode", "blast.remote_database"}
     string_keys = {"blast.entrez_query"}

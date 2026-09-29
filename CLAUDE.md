@@ -206,7 +206,7 @@ ATCGATCGATCGATCGATCGATCG
 
 **Input:** Stage 8's FASTA file + (local mode) the current reference database, or (remote mode) NCBI's live database.
 
-**Implementation status:** the config keys, validation, and per-run selection described above exist today. The actual remote dispatch — the `blastn -remote` subprocess call, caching its raw response against the run, and the report's remote-specific evidence — does not yet; selecting (or defaulting to) `blast.mode: remote` currently stops the run at Stage 9 with a clear, typed error rather than silently falling back to a local search under a "remote" label. `blast.mode: local` is the one fully working path meanwhile, exactly as it always has been.
+**Implementation status:** both modes are fully implemented. `blast.mode: remote` (the default) dispatches to `blastn -remote` against the configured NCBI database (`blast.remote_database`), optionally narrowed by `blast.entrez_query`, bounded by `blast.remote_timeout_seconds`; the raw response text and the exact query timestamp are stored on the run's own Stage 9 record as the audit trail's evidence, per the reasoning above. A network/NCBI-side failure or a timeout stops the run at Stage 9 the same clean way a missing local reference database does — an operational stop, not a biological one. `blast.mode: local` remains the pre-existing, fully reproducible path.
 
 **Output:** a ranked list of candidate hits, e.g.:
 

@@ -3,5 +3,8 @@ __pycache__/
 .venv/
 storage/
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 .pytest_cache/
 reference_data/
