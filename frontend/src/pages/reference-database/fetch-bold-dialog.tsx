@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ChevronDown, Database } from "lucide-react"
+import { ChevronDown, SlidersHorizontal, Sprout } from "lucide-react"
 import { useForm } from "react-hook-form"
 import { toast } from "sonner"
 import { z } from "zod"
@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/dialog"
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "cn"
 import { toFieldName } from "@/lib/config-groups"
 import { getErrorMessage } from "@/lib/errors"
@@ -113,112 +114,136 @@ export function FetchBoldDialog() {
         }
       }}
     >
-      <DialogTrigger asChild>
-        <Button variant="outline">
-          <Database className="size-4" />
-          Fetch from BOLD
-        </Button>
-      </DialogTrigger>
-      <DialogContent>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DialogTrigger asChild>
+            <Button variant="outline">
+              <Sprout className="size-4" />
+              Add species from BOLD
+            </Button>
+          </DialogTrigger>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-64">
+          BOLD (Barcode of Life Data System) is a public DNA barcode database. This pulls candidate
+          records into a draft for your review -- nothing is added automatically.
+        </TooltipContent>
+      </Tooltip>
+      <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Fetch candidate records from BOLD</DialogTitle>
+          <DialogTitle>Add species from BOLD</DialogTitle>
           <DialogDescription>
-            This only creates a draft for review -- nothing becomes searchable until you explicitly
-            publish it below.
+            BOLD (the Barcode of Life Data System) is a public library of verified DNA barcode
+            records. Pick a taxon and this pulls candidate records for it into a draft for you to
+            review -- nothing becomes searchable until you explicitly publish that draft.
           </DialogDescription>
         </DialogHeader>
 
         <Form {...form}>
           <form
             onSubmit={form.handleSubmit((values) => mutation.mutate(values))}
-            className="flex flex-col gap-4"
+            className="flex min-h-0 flex-1 flex-col"
           >
-            {mutation.isError && (
-              <Alert variant="destructive">
-                <AlertDescription>
-                  {getErrorMessage(mutation.error, "Couldn't fetch from BOLD.")}
-                </AlertDescription>
-              </Alert>
-            )}
-
-            <FormField
-              control={form.control}
-              name="taxon"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Taxon name</FormLabel>
-                  <FormControl>
-                    <Input placeholder="e.g. Panthera, Felidae, Panthera leo" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
+            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-1 py-1">
+              {mutation.isError && (
+                <Alert variant="destructive">
+                  <AlertDescription>
+                    {getErrorMessage(mutation.error, "Couldn't fetch from BOLD.")}
+                  </AlertDescription>
+                </Alert>
               )}
-            />
 
-            {suggestedQuery.data && suggestedQuery.data.length > 0 && (
-              <div className="flex flex-col gap-1.5">
-                <span className="text-muted-foreground text-xs">Or pick a suggestion</span>
-                <div className="flex flex-wrap gap-1.5">
-                  {suggestedQuery.data.map((taxon) => (
-                    <Badge
-                      key={taxon}
-                      variant="outline"
-                      className="hover:bg-accent cursor-pointer"
-                      onClick={() => form.setValue("taxon", taxon, { shouldValidate: true })}
-                    >
-                      {taxon}
-                    </Badge>
-                  ))}
+              <FormField
+                control={form.control}
+                name="taxon"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Taxon name</FormLabel>
+                    <FormControl>
+                      <Input placeholder="e.g. Panthera, Felidae, Panthera leo" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              {suggestedQuery.data && suggestedQuery.data.length > 0 && (
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-muted-foreground text-xs">Or pick a suggestion</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {suggestedQuery.data.map((taxon) => (
+                      <Badge
+                        key={taxon}
+                        variant="outline"
+                        className="hover:bg-accent cursor-pointer"
+                        onClick={() => form.setValue("taxon", taxon, { shouldValidate: true })}
+                      >
+                        {taxon}
+                      </Badge>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            {boldFetchItems.length > 0 && (
-              <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-                <CollapsibleTrigger className="text-muted-foreground flex w-full items-center justify-between text-left text-sm font-medium">
-                  <span>Filters (species-level ID, quality floor, per-species cap)</span>
-                  <ChevronDown
-                    className={cn("size-4 shrink-0 transition-transform", advancedOpen && "rotate-180")}
-                  />
-                </CollapsibleTrigger>
-                <CollapsibleContent className="mt-3 flex flex-col gap-4">
-                  {boldFetchItems.map((item) => (
-                    <FormField
-                      key={item.key}
-                      control={form.control}
-                      name={`thresholds.${toFieldName(item.key)}`}
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel
-                            className={cn(
-                              item.key === "bold_fetch.require_species_level" &&
-                                field.value === "allow_lower_rank" &&
-                                "text-status-critical"
-                            )}
-                          >
-                            {item.label}
-                          </FormLabel>
-                          <FormControl>
-                            <ConfigValueControl
-                              item={item}
-                              value={field.value as number | string}
-                              onChange={field.onChange}
-                              onBlur={field.onBlur}
-                            />
-                          </FormControl>
-                          <p className="text-muted-foreground text-xs">{item.description}</p>
-                          <FormMessage />
-                        </FormItem>
+              {boldFetchItems.length > 0 && (
+                <Collapsible
+                  open={advancedOpen}
+                  onOpenChange={setAdvancedOpen}
+                  className="rounded-lg border"
+                >
+                  <CollapsibleTrigger className="hover:bg-accent flex w-full items-center gap-2.5 rounded-lg p-3 text-left">
+                    <SlidersHorizontal className="text-muted-foreground size-4 shrink-0" />
+                    <div className="flex flex-1 flex-col gap-0.5">
+                      <span className="text-sm font-medium">Advanced filters</span>
+                      <span className="text-muted-foreground text-xs">
+                        Optional -- fine-tune which records get included before review
+                      </span>
+                    </div>
+                    <ChevronDown
+                      className={cn(
+                        "text-muted-foreground size-4 shrink-0 transition-transform",
+                        advancedOpen && "rotate-180"
                       )}
                     />
-                  ))}
-                </CollapsibleContent>
-              </Collapsible>
-            )}
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="flex flex-col gap-4 border-t p-3">
+                    {boldFetchItems.map((item) => (
+                      <FormField
+                        key={item.key}
+                        control={form.control}
+                        name={`thresholds.${toFieldName(item.key)}`}
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel
+                              className={cn(
+                                item.key === "bold_fetch.require_species_level" &&
+                                  field.value === "allow_lower_rank" &&
+                                  "text-status-critical"
+                              )}
+                            >
+                              {item.label}
+                            </FormLabel>
+                            <FormControl>
+                              <ConfigValueControl
+                                item={item}
+                                value={field.value as number | string}
+                                onChange={field.onChange}
+                                onBlur={field.onBlur}
+                              />
+                            </FormControl>
+                            <p className="text-muted-foreground text-xs">{item.description}</p>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    ))}
+                  </CollapsibleContent>
+                </Collapsible>
+              )}
+            </div>
 
             <DialogFooter>
               <Button type="submit" disabled={mutation.isPending}>
-                {mutation.isPending ? "Fetching..." : "Fetch"}
+                {mutation.isPending ? "Fetching from BOLD..." : "Fetch candidate records"}
               </Button>
             </DialogFooter>
           </form>
