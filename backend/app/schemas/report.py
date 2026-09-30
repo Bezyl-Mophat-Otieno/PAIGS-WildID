@@ -21,6 +21,13 @@ values in hand (they're what was passed as keyword thresholds into
 check_sanity_for_files / check_usability_from_*), so this is just a place
 to carry them through rather than a new source of truth.
 
+Values are `Union[float, str]`, not just `float`: `thresholds_used["blast"]`
+is exactly `kwargs_for_stage(effective, "blast")`'s output, which -- since
+the remote-vs-local BLAST search decision added blast.mode/
+blast.remote_database/blast.entrez_query -- legitimately contains strings
+now, not just numeric thresholds like every other stage's slice still
+does.
+
 `ab1_extraction` is Stage 2's raw (pre-trim) output, carried through
 unmodified -- lets the report show an analyst what the read looked like
 before Stage 4 trimming and any downstream QC touched it (raw length,
@@ -32,7 +39,7 @@ run created before this field existed) won't have Stage 2's output handy
 that case rather than the whole report failing to build.
 """
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -78,5 +85,5 @@ class ReportInput(BaseModel):
     blast: BlastSearchResult
     identification: IdentificationResult
 
-    thresholds_used: Dict[str, Dict[str, float]] = Field(default_factory=dict)
+    thresholds_used: Dict[str, Dict[str, Union[float, str]]] = Field(default_factory=dict)
     limitations: List[str] = Field(default_factory=lambda: [DEFAULT_LIMITATION])

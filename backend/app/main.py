@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,10 +11,25 @@ from app.api.dashboard import router as dashboard_router
 from app.api.reference import router as reference_router
 from app.api.runs import router as runs_router
 from app.db import Base, engine
+from app.orchestration import background
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="PAIGS WildID", version="0.1.0")
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # Starts the DB-backed poller that runs Stage 9's blast.mode="remote"
+    # searches in the background (see app.orchestration.background's own
+    # docstring) -- a no-op if PAIGS_DISABLE_BACKGROUND_WORKER is set
+    # (tests/conftest.py sets this, since the poller would otherwise
+    # connect via this same production engine rather than any individual
+    # test's isolated per-test database).
+    background.start()
+    yield
+    background.stop()
+
+
+app = FastAPI(title="PAIGS WildID", version="0.1.0", lifespan=_lifespan)
 
 # Without this, a frontend running on any other origin (a React dev
 # server, a deployed SPA on its own domain) is blocked by the browser

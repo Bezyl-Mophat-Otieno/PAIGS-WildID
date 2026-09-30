@@ -13,6 +13,18 @@ from sqlalchemy.orm import sessionmaker
 # `client` fixture below logs in for real on every single test.
 os.environ.setdefault("PAIGS_BCRYPT_ROUNDS", "4")
 
+# app.main's lifespan starts app.orchestration.background's poller, which
+# connects via that module's own SessionLocal -- the production engine,
+# bound to whatever PAIGS_DATABASE_URL resolves to for this whole test
+# process -- not any individual test's isolated per-test database (each
+# `client`/`db_session` fixture creates its own). A real poller thread has
+# no useful work to do against the wrong database; disabling it here
+# avoids dozens of thread start/stop cycles across the suite (`client` is
+# function-scoped, so its TestClient -- and this lifespan -- runs once
+# per test) for a thread that would just be noise either way. See
+# app.orchestration.background's own module docstring.
+os.environ.setdefault("PAIGS_DISABLE_BACKGROUND_WORKER", "1")
+
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))

@@ -1,4 +1,4 @@
-import { PendingPanel, SkippedPanel } from "@/components/run-detail/panel-states"
+import { PendingPanel, RunningPanel, SkippedPanel } from "@/components/run-detail/panel-states"
 import { Ab1ExtractionPanel } from "@/components/run-detail/panels/ab1-extraction-panel"
 import { BlastPanel } from "@/components/run-detail/panels/blast-panel"
 import { ConsensusPanel } from "@/components/run-detail/panels/consensus-panel"
@@ -117,6 +117,9 @@ export function StagePanel({
     case "fasta":
       return <FastaPanel output={stage.output as FastaOutput | ErrorOutput} />
     case "blast": {
+      if (stage.status === "running") {
+        return <RunningPanel message="Searching NCBI's remote database -- this can take several minutes." />
+      }
       const identificationOutput =
         identificationStage?.status === "completed"
           ? (identificationStage.output as IdentificationOutput)

@@ -289,10 +289,17 @@ class TestRerunAutoExecute:
         )
         source_id = create_resp.json()["id"]
 
-        # No reference database published -- same operational stop a
-        # fresh upload would hit; the point here is only that the rerun
-        # ran the pipeline at all within this single call.
-        resp = client.post(f"/runs/{source_id}/rerun", json={"auto_execute": True})
+        # blast.mode forced to "local": its catalog default is "remote",
+        # which needs no reference database at all and would enqueue a
+        # background search instead of stopping here (see
+        # app.orchestration.background) -- this test wants the
+        # deterministic, synchronous "no reference database published"
+        # stop a fresh upload would hit, purely to prove auto_execute ran
+        # the pipeline at all within this single call.
+        resp = client.post(
+            f"/runs/{source_id}/rerun",
+            json={"auto_execute": True, "config_overrides": {"blast.mode": "local"}},
+        )
 
         assert resp.status_code == 201
         body = resp.json()

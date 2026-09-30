@@ -82,6 +82,26 @@ def _format_check(slots):
     return {slot: FileFormatCheck(filename=f"{slot}.ab1", valid=True) for slot in slots}
 
 
+def _seed_stages_1_and_2(db_session, run, format_check, extractions):
+    """This file's own established pattern calls continue_run_from_extraction()
+    directly, bypassing execute_run() -- so Stage 1/2 rows are never
+    persisted (see the module docstring). resume_run_after_blast() reads
+    them back from storage, same as it does every other prior stage, so
+    tests exercising it need those two rows to actually exist, matching
+    what a real execute_run() call would have already written by the time
+    Stage 9 is ever reached."""
+    from app.orchestration.execute import _persist_stage
+
+    _persist_stage(
+        db_session, run, "format_check", status="completed",
+        output={slot: result.model_dump() for slot, result in format_check.items()},
+    )
+    _persist_stage(
+        db_session, run, "ab1_extraction", status="completed",
+        output={slot: result.model_dump() for slot, result in extractions.items()},
+    )
+
+
 def _publish_matching_reference(db_session, temp_reference_data_root, tmp_path, sequence, species="Testus syntheticus"):
     fasta_path = tmp_path / "reference.fasta"
     fasta_path.write_text(f">TESTREF001 {species}\n{sequence}\n")
@@ -611,3 +631,219 @@ class TestContinueRunFromExtractionWithConfigOverrides:
         # real global config (seeded with catalog defaults), not some
         # empty/zeroed-out dict.
         assert sanity_stage.stage_metadata["thresholds"]["min_raw_length"] == 50
+
+
+class TestRemoteBlastModeDispatch:
+    """blast.mode="remote" is the catalog's own default -- Stage 9 must
+    not block the synchronous call at all when it's selected. It persists
+    a "running" stage and returns immediately, leaving Stage 10/11 for
+    resume_run_after_blast() (app.orchestration.background's poller) to
+    finish later, once the real NCBI search actually completes. Covered
+    here at the orchestration-function level, without a real network
+    call -- see test_reference_publish.py's own remote-mode tests for the
+    actual blastn -remote command construction/parsing.
+    """
+
+    def test_dispatching_remote_search_persists_a_running_stage_and_leaves_run_in_progress(
+        self, db_session, temp_storage_root, tmp_path
+    ):
+        from app import storage
+        from app.orchestration.execute import continue_run_from_extraction
+
+        good_seq = "".join(["ATCG"[i % 4] for i in range(700)])
+        good = ReadExtraction(raw_sequence=good_seq, raw_length=700, quality_scores=[40] * 700)
+        extractions = {"forward": good}
+        format_check = _format_check(["forward"])
+        # config_overrides={} (not None) so _make_run's own local-mode
+        # default is bypassed -- this test is specifically about the real
+        # "remote" catalog default.
+        run = _make_run(db_session, original_filenames=["forward.ab1"], config_overrides={})
+
+        result = continue_run_from_extraction(
+            run, format_check, extractions, db_session, storage.run_dir(run.id)
+        )
+
+        assert result.status == "in_progress"
+        assert result.current_stage == "blast"
+
+        from app.models.stage import Stage
+
+        blast_stage = (
+            db_session.query(Stage)
+            .filter(Stage.run_id == run.id, Stage.stage_type == "blast")
+            .one()
+        )
+        assert blast_stage.status == "running"
+        assert blast_stage.output is None
+        assert blast_stage.stage_metadata["thresholds"]["mode"] == "remote"
+        assert "effective" in blast_stage.stage_metadata
+
+        stage_types = {
+            s.stage_type for s in db_session.query(Stage).filter(Stage.run_id == run.id).all()
+        }
+        assert "identification" not in stage_types
+        assert "report" not in stage_types
+
+
+class TestResumeRunAfterBlast:
+    """The other half: once a background poller decides the remote search
+    is ready to run for real, resume_run_after_blast() must reconstruct
+    everything Stage 10/11 need purely from this run's own already-
+    persisted Stage rows (no Python state survives from the original
+    request that enqueued it) and finish the run exactly as the
+    synchronous local-mode path always has.
+    """
+
+    def test_resumes_and_completes_the_run_after_a_mocked_remote_search(
+        self, db_session, temp_storage_root, monkeypatch
+    ):
+        import app.orchestration.execute as execute_module
+        from app import storage
+        from app.models.stage import Stage
+        from app.orchestration.execute import continue_run_from_extraction, resume_run_after_blast
+        from app.schemas.blast import BlastHit, BlastSearchResult
+
+        good_seq = "".join(["ATCG"[i % 4] for i in range(700)])
+        good = ReadExtraction(raw_sequence=good_seq, raw_length=700, quality_scores=[40] * 700)
+        extractions = {"forward": good}
+        format_check = _format_check(["forward"])
+        run = _make_run(db_session, original_filenames=["forward.ab1"], config_overrides={})
+        _seed_stages_1_and_2(db_session, run, format_check, extractions)
+
+        continue_run_from_extraction(
+            run, format_check, extractions, db_session, storage.run_dir(run.id)
+        )
+
+        fake_result = BlastSearchResult(
+            hits=[
+                BlastHit(
+                    rank=1,
+                    species="Testus syntheticus",
+                    identity=99.0,
+                    coverage=98.0,
+                    evalue=0.0,
+                    bit_score=500.0,
+                    accession="REF001",
+                )
+            ],
+            database_version="NCBI nt (remote, live -- not version-pinned)",
+            query_length=700,
+            search_mode="remote",
+            remote_database="nt",
+        )
+        monkeypatch.setattr(
+            execute_module, "search_active_reference_database", lambda *a, **k: fake_result
+        )
+
+        result = resume_run_after_blast(run.id, db_session)
+
+        assert result.status == "completed"
+        assert result.current_stage == "report"
+
+        blast_stage = (
+            db_session.query(Stage)
+            .filter(Stage.run_id == run.id, Stage.stage_type == "blast")
+            .one()
+        )
+        assert blast_stage.status == "completed"
+        assert blast_stage.output["search_mode"] == "remote"
+
+        identification_stage = (
+            db_session.query(Stage)
+            .filter(Stage.run_id == run.id, Stage.stage_type == "identification")
+            .one()
+        )
+        assert identification_stage.output["candidate_species"] == "Testus syntheticus"
+
+        report_stage = (
+            db_session.query(Stage)
+            .filter(Stage.run_id == run.id, Stage.stage_type == "report")
+            .one()
+        )
+        report_path = Path(report_stage.output["report_path"])
+        assert report_path.is_file()
+        assert report_path.read_bytes().startswith(b"%PDF")
+
+    def test_a_failed_remote_search_stops_the_run_cleanly(
+        self, db_session, temp_storage_root, monkeypatch
+    ):
+        import app.orchestration.execute as execute_module
+        from app import storage
+        from app.models.stage import Stage
+        from app.orchestration.execute import continue_run_from_extraction, resume_run_after_blast
+
+        good_seq = "".join(["ATCG"[i % 4] for i in range(700)])
+        good = ReadExtraction(raw_sequence=good_seq, raw_length=700, quality_scores=[40] * 700)
+        extractions = {"forward": good}
+        format_check = _format_check(["forward"])
+        run = _make_run(db_session, original_filenames=["forward.ab1"], config_overrides={})
+        _seed_stages_1_and_2(db_session, run, format_check, extractions)
+
+        continue_run_from_extraction(
+            run, format_check, extractions, db_session, storage.run_dir(run.id)
+        )
+
+        def _raise(*args, **kwargs):
+            raise RuntimeError("Remote BLAST search against NCBI's 'nt' database timed out after 300s.")
+
+        monkeypatch.setattr(execute_module, "search_active_reference_database", _raise)
+
+        result = resume_run_after_blast(run.id, db_session)
+
+        assert result.status == "failed"
+        assert result.current_stage == "blast"
+
+        blast_stage = (
+            db_session.query(Stage)
+            .filter(Stage.run_id == run.id, Stage.stage_type == "blast")
+            .one()
+        )
+        assert blast_stage.status == "failed"
+        assert "timed out" in blast_stage.output["error"]
+
+    def test_is_a_no_op_if_the_blast_stage_is_no_longer_running(
+        self, db_session, temp_storage_root, monkeypatch
+    ):
+        """Guards against double-processing -- e.g. a process restart
+        that picks the same "running" row up twice."""
+        import app.orchestration.execute as execute_module
+        from app import storage
+        from app.models.stage import Stage
+        from app.orchestration.execute import continue_run_from_extraction, resume_run_after_blast
+        from app.schemas.blast import BlastHit, BlastSearchResult
+
+        good_seq = "".join(["ATCG"[i % 4] for i in range(700)])
+        good = ReadExtraction(raw_sequence=good_seq, raw_length=700, quality_scores=[40] * 700)
+        extractions = {"forward": good}
+        format_check = _format_check(["forward"])
+        run = _make_run(db_session, original_filenames=["forward.ab1"], config_overrides={})
+        _seed_stages_1_and_2(db_session, run, format_check, extractions)
+
+        continue_run_from_extraction(
+            run, format_check, extractions, db_session, storage.run_dir(run.id)
+        )
+
+        call_count = {"n": 0}
+        fake_result = BlastSearchResult(
+            hits=[
+                BlastHit(
+                    rank=1, species="Testus syntheticus", identity=99.0, coverage=98.0,
+                    evalue=0.0, bit_score=500.0, accession="REF001",
+                )
+            ],
+            database_version="NCBI nt (remote, live -- not version-pinned)",
+            query_length=700,
+            search_mode="remote",
+        )
+
+        def _fake_search(*args, **kwargs):
+            call_count["n"] += 1
+            return fake_result
+
+        monkeypatch.setattr(execute_module, "search_active_reference_database", _fake_search)
+
+        resume_run_after_blast(run.id, db_session)
+        result = resume_run_after_blast(run.id, db_session)  # second call -- blast is "completed" now
+
+        assert call_count["n"] == 1
+        assert result.status == "completed"
