@@ -21,6 +21,11 @@ from app.pipeline.usability_check import (
     DEFAULT_MIN_LENGTH,
     DEFAULT_MIN_MEAN_QUALITY,
 )
+from app.reference.bold import (
+    DEFAULT_MAX_N_PROPORTION as BOLD_DEFAULT_MAX_N_PROPORTION,
+    DEFAULT_MAX_RECORDS_PER_SPECIES as BOLD_DEFAULT_MAX_RECORDS_PER_SPECIES,
+    DEFAULT_MIN_SEQUENCE_LENGTH as BOLD_DEFAULT_MIN_SEQUENCE_LENGTH,
+)
 
 EXPECTED_DEFAULTS = {
     "sanity_check.max_n_proportion": DEFAULT_MAX_N_PROPORTION,
@@ -37,16 +42,19 @@ EXPECTED_DEFAULTS = {
     "identification.min_identity_pct": DEFAULT_MIN_IDENTITY_PCT,
     "identification.min_coverage_pct": DEFAULT_MIN_COVERAGE_PCT,
     "identification.ambiguous_margin_pct": DEFAULT_AMBIGUOUS_MARGIN_PCT,
+    "bold_fetch.min_sequence_length": BOLD_DEFAULT_MIN_SEQUENCE_LENGTH,
+    "bold_fetch.max_n_proportion": BOLD_DEFAULT_MAX_N_PROPORTION,
+    "bold_fetch.max_records_per_species": BOLD_DEFAULT_MAX_RECORDS_PER_SPECIES,
 }
 
-# The three non-numeric ("enum"/"string") keys added for the
-# remote-vs-local BLAST search decision -- not part of EXPECTED_DEFAULTS
+# The non-numeric ("enum"/"string") keys -- not part of EXPECTED_DEFAULTS
 # above since they don't map to a pipeline module's own DEFAULT_*
-# constant, and aren't cast through float().
+# constant cast through float(), and aren't checked against `bounds`.
 NON_NUMERIC_DEFAULTS = {
     "blast.mode": "remote",
     "blast.remote_database": "nt",
     "blast.entrez_query": "",
+    "bold_fetch.require_species_level": "required",
 }
 
 
@@ -78,8 +86,10 @@ def test_value_type_matches_the_default_constants_own_python_type():
         "usability_check.min_length",
         "blast.max_hits",
         "blast.remote_timeout_seconds",
+        "bold_fetch.min_sequence_length",
+        "bold_fetch.max_records_per_species",
     }
-    enum_keys = {"blast.mode", "blast.remote_database"}
+    enum_keys = {"blast.mode", "blast.remote_database", "bold_fetch.require_species_level"}
     string_keys = {"blast.entrez_query"}
     for definition in CATALOG:
         if definition.key in enum_keys:

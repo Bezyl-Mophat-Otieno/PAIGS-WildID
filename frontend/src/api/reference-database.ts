@@ -1,5 +1,9 @@
 import { apiClient } from "@/api/client"
-import type { PublishReferenceDatabaseResult, ReferenceDatabaseVersion } from "@/types/api"
+import type {
+  PublishReferenceDatabaseResult,
+  ReferenceDatabaseDraft,
+  ReferenceDatabaseVersion,
+} from "@/types/api"
 
 export async function listReferenceDatabaseVersions() {
   const { data } = await apiClient.get<ReferenceDatabaseVersion[]>(
@@ -31,6 +35,50 @@ export async function publishReferenceDatabase(fasta: File, version: string) {
     "/reference-database/publish",
     form,
     { headers: { "Content-Type": "multipart/form-data" } }
+  )
+  return data
+}
+
+export async function listSuggestedTaxa() {
+  const { data } = await apiClient.get<string[]>("/reference-database/suggested-taxa")
+  return data
+}
+
+export async function listReferenceDrafts() {
+  const { data } = await apiClient.get<ReferenceDatabaseDraft[]>("/reference-database/drafts")
+  return data
+}
+
+export async function createReferenceDraft(payload: {
+  taxon: string
+  marker?: string
+  // All four omitted means "use the current bold_fetch.* global default"
+  // (see GET /config) -- not a value hardcoded here.
+  max_records_per_species?: number
+  min_sequence_length?: number
+  max_n_proportion?: number
+  require_species_level?: string
+}) {
+  const { data } = await apiClient.post<ReferenceDatabaseDraft>(
+    "/reference-database/drafts",
+    payload
+  )
+  return data
+}
+
+// The human review/approve step -- the only thing that turns a draft
+// into something Runs can actually search against.
+export async function publishReferenceDraft(draftId: string, version: string) {
+  const { data } = await apiClient.post<PublishReferenceDatabaseResult>(
+    `/reference-database/drafts/${draftId}/publish`,
+    { version }
+  )
+  return data
+}
+
+export async function discardReferenceDraft(draftId: string) {
+  const { data } = await apiClient.post<ReferenceDatabaseDraft>(
+    `/reference-database/drafts/${draftId}/discard`
   )
   return data
 }

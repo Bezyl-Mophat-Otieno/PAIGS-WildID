@@ -218,6 +218,22 @@ ATCGATCGATCGATCGATCGATCG
 | 2 | Panthera pardus | 94.10% | 96.7% | 1e-90 | 980 | REF002 |
 | 3 | Panthera tigris | 93.80% | 95.9% | 2e-88 | 965 | REF003 |
 
+## Building the local reference database: BOLD fetch + human review
+
+CLAUDE.md is deliberate that the local reference set is a domain-expert judgment call — curated by a person, never invented or auto-activated by engineering. That doesn't rule out automating the tedious mechanical part of assembling one: fetching candidate records from a real barcode database, filtering out the obviously unusable ones, and reformatting into this app's expected FASTA shape. What it does rule out is skipping the human judgment call — so this workflow produces a **draft**, never something searchable on its own, until a person explicitly reviews and approves it.
+
+**Source:** [BOLD Systems](https://boldsystems.org) (Barcode of Life Data System) — chosen because it's specifically curated for DNA-barcoding species identification (COI, the same marker this pipeline's own glossary assumes), unlike a generic sequence database. Fetched via BOLD's real, current Portal API (`portal.boldsystems.org/api/...` — the older "API_Public" REST API widely cited in older literature no longer exists) — a three-step flow: validate/resolve a taxon query, submit it for a query token, then stream matching records.
+
+**The taxon input has no restriction** — any taxon BOLD's own controlled vocabulary recognizes can be fetched (a family, genus, or species name alike); a short list of common examples is offered as a one-click convenience, never a whitelist.
+
+**Automated filtering (the mechanical slice of the curation judgment):** records with no real species-level identification, or a sequence too short/too ambiguous, are dropped before ever reaching a draft. A per-species record cap keeps the eventual local index lean. None of this auto-*accepts* a record as trustworthy — it only screens out what's mechanically unusable. A subspecies-confirmed record (e.g. a named subspecies, not just genus/family) is treated as fully trustworthy too, same as species-level — it's strictly *more* precise, not less.
+
+**Every one of these filters is analyst-overridable per fetch, through the same Configuration subsystem every Run stage's own thresholds already use** (global default + deliberate per-action override, never a silently different value between two callers) — the sequence-quality floor, the per-species cap, *and* the species-level requirement itself. Loosening the identification requirement (`bold_fetch.require_species_level: "allow_lower_rank"`) is a different kind of choice than the other two: it's not a threshold tweak, it's accepting a materially less trustworthy answer-key entry into the draft. The UI marks this option as a visible risk trade, not an equally-weighted checkbox, and every record admitted this way is counted and flagged separately in the draft summary — never blended into the same rows as a real species-level entry.
+
+**Flagged, never auto-resolved:** BOLD's own BIN (a DNA-cluster-based proxy for a species boundary) is used two ways, both surfaced to the reviewer, neither decided automatically — a species whose own kept records split across more than one BIN, and different species names whose records share one BIN (usually a misidentification or synonym). Both are exactly the kind of judgment call a domain expert, not engineering, should make.
+
+**Publishing stays a separate, deliberate action.** Approving a draft hands its already-reformatted FASTA to the exact same publish path a manually-curated upload goes through — no special-casing for a BOLD-sourced draft, and nothing about the fetch step itself ever touches the active reference database.
+
 ## Stage 10 — Identification engine
 
 **What happens:** the ranked BLAST hits are run through a rules layer that decides a final category. The top hit is never taken at face value.

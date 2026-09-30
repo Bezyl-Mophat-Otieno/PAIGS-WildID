@@ -21,7 +21,11 @@ export const THRESHOLD_STAGE_LABELS: Partial<Record<StageType, string>> = {
 }
 
 export function groupConfigByStage(items: ConfigItem[]) {
-  const groups = new Map<StageType, ConfigItem[]>()
+  // Keyed by ConfigItem's own (slightly wider) stage_type -- harmless,
+  // since the returned groups only ever surface THRESHOLD_STAGE_ORDER's
+  // real StageType entries below; a "bold_fetch" item (not a Run stage
+  // at all -- see ConfigItem's own comment) just never gets pulled out.
+  const groups = new Map<StageType | "bold_fetch", ConfigItem[]>()
   for (const item of items) {
     const group = groups.get(item.stage_type) ?? []
     group.push(item)

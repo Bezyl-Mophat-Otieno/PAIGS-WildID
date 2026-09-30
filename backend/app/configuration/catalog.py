@@ -15,19 +15,27 @@ by number (3, 4, 7, 10); Stage 5's orientation-overlap bar and Stage 9's
 max_hits were added on the user's explicit request during that doc's
 review, on the same "a deliberate choice, not silent inheritance"
 reasoning -- see that doc's own per-stage notes. All entries across 6
-stages are catalogued here as one flat list, keyed
-"<stage_type>.<param_name>" -- that key is what a per-run
-config_overrides dict (POST /runs, POST /runs/{id}/rerun) and PUT
-/config/{id} both address, and it's exactly the kwarg name each stage's
-own pipeline function accepts (via app.configuration.service.kwargs_for_stage).
+Run stages plus one non-Run workflow (`bold_fetch` -- see below) are
+catalogued here as one flat list, keyed "<stage_type>.<param_name>" --
+that key is what a per-run config_overrides dict (POST /runs, POST
+/runs/{id}/rerun) and PUT /config/{id} both address, and it's exactly the
+kwarg name each stage's own pipeline function accepts (via
+app.configuration.service.kwargs_for_stage).
 
 Most entries are numeric ("int"/"float", validated against `bounds`). The
-three `blast.mode` / `blast.remote_database` / `blast.entrez_query`
-entries are not -- they're the remote-vs-local BLAST search decision (see
-claude/remote-blast-search.md): a fixed-choice ("enum", validated against
-`choices`) or free-text ("string", unvalidated beyond type) value instead
-of a number. `bounds` is meaningless for those two value_types and is
-left at its (None, None) default.
+`blast.mode` / `blast.remote_database` / `bold_fetch.require_species_level`
+entries are "enum" (validated against `choices`); `blast.entrez_query` is
+free-text ("string", unvalidated beyond type). `bounds` is meaningless
+for either of those value_types and is left at its (None, None) default.
+
+`bold_fetch.*` is not a pipeline Run stage at all -- it's the same
+global-default-plus-per-action-override mechanism reused for a different
+workflow: automated candidate-record fetching from BOLD Systems for
+building the local reference database (see app.reference.bold and
+app.reference.drafts). Reused deliberately rather than inventing a
+second config mechanism, since the actual need -- "a sensible default,
+deliberately overridable per action, never silently different between
+two callers" -- is identical.
 """
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
@@ -45,6 +53,12 @@ from app.pipeline.usability_check import (
     DEFAULT_MAX_AMBIGUOUS_PROPORTION,
     DEFAULT_MIN_LENGTH,
     DEFAULT_MIN_MEAN_QUALITY,
+)
+from app.reference.bold import (
+    DEFAULT_MAX_N_PROPORTION as BOLD_DEFAULT_MAX_N_PROPORTION,
+    DEFAULT_MAX_RECORDS_PER_SPECIES as BOLD_DEFAULT_MAX_RECORDS_PER_SPECIES,
+    DEFAULT_MIN_SEQUENCE_LENGTH as BOLD_DEFAULT_MIN_SEQUENCE_LENGTH,
+    DEFAULT_REQUIRE_SPECIES_LEVEL as BOLD_DEFAULT_REQUIRE_SPECIES_LEVEL,
 )
 
 
@@ -226,6 +240,49 @@ CATALOG = [
         "candidate by before the result is called clear rather than "
         "ambiguous.",
         (0.0, 100.0),
+    ),
+    _entry(
+        "bold_fetch", "min_sequence_length", BOLD_DEFAULT_MIN_SEQUENCE_LENGTH,
+        "Min sequence length (bp)",
+        "A candidate BOLD record's sequence shorter than this is dropped "
+        "as a partial/truncated read, not a reliable enough fingerprint "
+        "to trust as reference ground truth. A full COI barcode is "
+        "normally ~650bp; lower this for a taxon whose marker region is "
+        "naturally shorter.",
+        (1, None),
+    ),
+    _entry(
+        "bold_fetch", "max_n_proportion", BOLD_DEFAULT_MAX_N_PROPORTION,
+        "Max ambiguous (N) proportion",
+        "Maximum proportion of unreadable \"N\" positions tolerated in a "
+        "candidate record's own sequence before it's dropped as too "
+        "degraded to trust -- the same idea as Stage 3's own sanity "
+        "check on an uploaded sample, applied here to BOLD's data "
+        "instead.",
+        (0.0, 1.0),
+    ),
+    _entry(
+        "bold_fetch", "max_records_per_species", BOLD_DEFAULT_MAX_RECORDS_PER_SPECIES,
+        "Max records kept per species",
+        "How many BOLD records survive per species once a fetch is "
+        "otherwise clean -- keeping every specimen BOLD has for a common "
+        "species bloats the local BLAST index and over-represents it "
+        "relative to rarer ones, without making the reference set more "
+        "accurate. An engineering/practical judgment call, not a "
+        "biological one.",
+        (1, None),
+    ),
+    _entry(
+        "bold_fetch", "require_species_level", BOLD_DEFAULT_REQUIRE_SPECIES_LEVEL,
+        "Species-level identification",
+        "\"required\" (default) drops any BOLD record not confirmed to "
+        "species level -- a genus/family-only identification isn't a "
+        "trustworthy species-level answer-key entry. \"allow_lower_rank\" "
+        "is a deliberate risk trade, not a threshold tweak: it admits "
+        "lower-confidence identifications into the draft, clearly "
+        "flagged, rather than screening them out entirely. Reviewed "
+        "manually either way before anything is published.",
+        choices=("required", "allow_lower_rank"),
     ),
 ]
 

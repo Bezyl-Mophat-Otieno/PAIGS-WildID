@@ -1,11 +1,13 @@
 import { useQuery } from "@tanstack/react-query"
 import { CheckCircle2, Database } from "lucide-react"
-import { listReferenceDatabaseVersions } from "@/api/reference-database"
+import { listReferenceDatabaseVersions, listReferenceDrafts } from "@/api/reference-database"
 import { DataTable } from "@/components/data-table/data-table"
 import { StatRow } from "@/components/stat-row"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useAuth } from "@/context/auth-context"
+import { DraftReviewCard } from "@/pages/reference-database/draft-review-card"
+import { FetchBoldDialog } from "@/pages/reference-database/fetch-bold-dialog"
 import { PublishVersionDialog } from "@/pages/reference-database/publish-version-dialog"
 import { versionColumns } from "@/pages/reference-database/version-columns"
 
@@ -18,7 +20,15 @@ export function ReferenceDatabasePage() {
     queryFn: listReferenceDatabaseVersions,
   })
 
+  const draftsQuery = useQuery({
+    queryKey: ["reference-database", "drafts"],
+    queryFn: listReferenceDrafts,
+    enabled: isAdmin,
+  })
+
   const active = versions?.find((v) => v.is_active)
+  const pendingDrafts = (draftsQuery.data ?? []).filter((d) => d.status === "pending_review")
+  const reviewedDrafts = (draftsQuery.data ?? []).filter((d) => d.status !== "pending_review")
 
   return (
     <div className="flex flex-col gap-6">
@@ -29,8 +39,22 @@ export function ReferenceDatabasePage() {
             The curated species reference set every BLAST search runs against.
           </p>
         </div>
-        {isAdmin && <PublishVersionDialog />}
+        {isAdmin && (
+          <div className="flex gap-2">
+            <FetchBoldDialog />
+            <PublishVersionDialog />
+          </div>
+        )}
       </div>
+
+      {isAdmin && pendingDrafts.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <h2 className="text-lg font-semibold">Pending review</h2>
+          {pendingDrafts.map((draft) => (
+            <DraftReviewCard key={draft.id} draft={draft} />
+          ))}
+        </div>
+      )}
 
       <Card>
         <CardHeader>
@@ -71,6 +95,19 @@ export function ReferenceDatabasePage() {
           />
         )}
       </div>
+
+      {isAdmin && reviewedDrafts.length > 0 && (
+        <details className="flex flex-col gap-3">
+          <summary className="text-muted-foreground cursor-pointer text-sm font-medium">
+            {reviewedDrafts.length} previously reviewed draft{reviewedDrafts.length === 1 ? "" : "s"}
+          </summary>
+          <div className="mt-3 flex flex-col gap-3">
+            {reviewedDrafts.map((draft) => (
+              <DraftReviewCard key={draft.id} draft={draft} />
+            ))}
+          </div>
+        </details>
+      )}
     </div>
   )
 }

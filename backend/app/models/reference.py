@@ -12,7 +12,7 @@ build_reference_database() output on disk, at the path this table records.
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String
+from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String
 
 from app.db import Base
 
@@ -70,3 +70,43 @@ class ReferenceDatabaseVersion(Base):
     sequence_count = Column(Integer, nullable=False)
     is_active = Column(Boolean, nullable=False, default=False)
     published_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+
+class ReferenceDatabaseDraft(Base):
+    """A candidate reference set automatically fetched from an external
+    source (BOLD Systems, so far -- see app.reference.bold) and awaiting
+    human review. Never searchable, never active on its own: the whole
+    point of this table existing separately from ReferenceDatabaseVersion
+    is that nothing here can become a Run's active reference database
+    without someone explicitly reviewing `summary` and calling this
+    draft's own publish action, which hands its `fasta_path` to the exact
+    same publish_reference_db() a manually-curated upload goes through --
+    see app.reference.drafts. Automation here only ever covers the fetch/
+    filter/reformat mechanics; going live stays a deliberate, separate,
+    human action, per CLAUDE.md's own insistence that the reference set is
+    a domain-expert judgment call, not something engineering auto-
+    activates.
+    """
+
+    __tablename__ = "reference_database_drafts"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    source = Column(String, nullable=False)  # "bold" today; kept general for a future second source
+    taxon = Column(String, nullable=False)  # exactly what was queried, e.g. "Panthera"
+    marker = Column(String, nullable=False)
+    fasta_path = Column(String, nullable=False)
+    # Everything a reviewer needs to decide, without re-fetching or
+    # re-deriving it: per-species kept/dropped counts and BIN-consistency
+    # flags, drop-reason counts, and any species found sharing a BIN (see
+    # app.reference.bold.BoldFetchResult) -- a plain JSON blob, same
+    # reasoning as Stage.output's own free-form audit fields elsewhere in
+    # this app.
+    summary = Column(JSON, nullable=False)
+    status = Column(String, nullable=False, default="pending_review")  # pending_review | published | discarded
+    requested_by = Column(String, nullable=True)  # the User.id who triggered the fetch
+    fetched_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    # Set only once this draft is actually published -- the
+    # ReferenceDatabaseVersion.version it became, so a draft's own history
+    # stays traceable to what it turned into.
+    published_as_version = Column(String, nullable=True)

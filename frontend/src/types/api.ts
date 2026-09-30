@@ -251,7 +251,11 @@ export interface RunDetail extends Run {
 export interface ConfigItem {
   id: string
   key: string
-  stage_type: StageType
+  // Almost always a real Run StageType -- "bold_fetch" is the one
+  // exception (see app.configuration.catalog's own note): the same
+  // global-default-plus-override mechanism reused for BOLD reference
+  // fetching, not a Run stage at all.
+  stage_type: StageType | "bold_fetch"
   param_name: string
   label: string
   description: string
@@ -294,6 +298,56 @@ export interface PublishReferenceDatabaseResult {
   fasta_path: string
   db_prefix: string
   sequence_count: number
+}
+
+// A ReferenceDatabaseDraft's per-species breakdown -- one row per named
+// species BOLD returned, after this taxon's records were filtered.
+export interface BoldSpeciesSummary {
+  species: string
+  kept_count: number
+  dropped_count: number
+  bins: string[]
+  // False = this species' kept records don't all share one BIN (BOLD's
+  // own DNA-cluster proxy for a species boundary) -- worth a second look
+  // before approving, not an automatic reject.
+  bin_consistent: boolean
+  // "species" for a real species-level entry; "genus"/"family"/etc. only
+  // when the fetch used require_species_level="allow_lower_rank" -- a
+  // materially less trustworthy answer-key entry, not just another row.
+  identification_rank: string
+}
+
+export interface ReferenceDraftSummary {
+  total_fetched: number
+  total_kept: number
+  drop_reasons: Record<string, number>
+  species: BoldSpeciesSummary[]
+  // Groups of >1 species name whose kept records share one BIN -- a
+  // stronger flag than per-species inconsistency (a same DNA cluster
+  // under two different names usually means a misidentification or a
+  // synonym, not just noisy data).
+  species_sharing_a_bin: string[][]
+  // Only nonzero when require_species_level="allow_lower_rank" was
+  // explicitly chosen for this fetch -- surfaced as its own count so a
+  // reviewer can't miss it among per-species rows.
+  total_kept_at_lower_rank: number
+}
+
+// GET/POST /reference-database/drafts and /drafts/{id} -- a candidate
+// reference set pulled from BOLD, awaiting human review. Never active on
+// its own; only .../drafts/{id}/publish turns it into a real
+// ReferenceDatabaseVersion.
+export interface ReferenceDatabaseDraft {
+  id: string
+  source: string
+  taxon: string
+  marker: string
+  summary: ReferenceDraftSummary
+  status: "pending_review" | "published" | "discarded"
+  requested_by: string | null
+  fetched_at: string
+  reviewed_at: string | null
+  published_as_version: string | null
 }
 
 // GET /runs/{id}/chromatogram/{slot}. `channel_order` gives dye order as
