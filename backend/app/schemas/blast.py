@@ -35,3 +35,13 @@ class BlastSearchResult(BaseModel):
     entrez_query: Optional[str] = None
     queried_at: Optional[datetime] = None
     raw_response: Optional[str] = None
+
+    # "http" (the primary transport -- app.pipeline.ncbi_remote talking to
+    # NCBI's Blast.cgi directly) or "subprocess_fallback" (the older
+    # blastn -remote subprocess path, used only when HTTP submission
+    # itself couldn't be completed -- see
+    # app.orchestration.execute._fallback_to_subprocess_search). None for
+    # local-mode results, and for any remote result recorded before this
+    # field existed. Surfaced so a report can show plainly when a run had
+    # to degrade to the fallback, rather than burying it in raw_response.
+    remote_transport: Optional[str] = None

@@ -686,22 +686,54 @@ class TestRemoteBlastModeDispatch:
 
 
 class TestResumeRunAfterBlast:
-    """The other half: once a background poller decides the remote search
-    is ready to run for real, resume_run_after_blast() must reconstruct
-    everything Stage 10/11 need purely from this run's own already-
-    persisted Stage rows (no Python state survives from the original
-    request that enqueued it) and finish the run exactly as the
-    synchronous local-mode path always has.
+    """The other half: once app.orchestration.background's poller picks
+    up Stage 9's "running" row, resume_run_after_blast() drives
+    app.pipeline.ncbi_remote's submit -> poll -> fetch state machine one
+    non-blocking tick at a time (see _advance_remote_blast's own
+    docstring) -- unlike the old one-shot blocking subprocess design,
+    most real calls here are genuinely called many times per run, not
+    once. Once a result is actually in hand, it reconstructs everything
+    Stage 10/11 need purely from this run's own already-persisted Stage
+    rows (no Python state survives from the original request that
+    enqueued it) and finishes the run exactly as the synchronous
+    local-mode path always has.
+
+    app.pipeline.ncbi_remote itself is mocked here (submit_search /
+    check_status / fetch_result) -- its own real HTTP parsing is covered
+    by test_ncbi_remote.py against genuinely-captured NCBI responses; the
+    fallback-to-subprocess path (when submission itself fails) is covered
+    separately below.
     """
 
-    def test_resumes_and_completes_the_run_after_a_mocked_remote_search(
-        self, db_session, temp_storage_root, monkeypatch
-    ):
-        import app.orchestration.execute as execute_module
-        from app import storage
+    @staticmethod
+    def _blast_stage(db_session, run):
         from app.models.stage import Stage
-        from app.orchestration.execute import continue_run_from_extraction, resume_run_after_blast
-        from app.schemas.blast import BlastHit, BlastSearchResult
+
+        return (
+            db_session.query(Stage)
+            .filter(Stage.run_id == run.id, Stage.stage_type == "blast")
+            .one()
+        )
+
+    @staticmethod
+    def _make_due(db_session, blast_stage):
+        """Rewrites the running stage's own stashed next_check_at into
+        the past, so the next resume_run_after_blast() tick treats its
+        pending poll as due -- without an actual wall-clock sleep in a
+        test. A real poller tick naturally becomes due this way as time
+        actually passes; this is just that same condition, forced."""
+        from datetime import datetime, timedelta, timezone
+
+        metadata = dict(blast_stage.stage_metadata)
+        job = dict(metadata["remote_job"])
+        job["next_check_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        metadata["remote_job"] = job
+        blast_stage.stage_metadata = metadata
+        db_session.commit()
+
+    def _start_run(self, db_session, temp_storage_root):
+        from app import storage
+        from app.orchestration.execute import continue_run_from_extraction
 
         good_seq = "".join(["ATCG"[i % 4] for i in range(700)])
         good = ReadExtraction(raw_sequence=good_seq, raw_length=700, quality_scores=[40] * 700)
@@ -713,40 +745,78 @@ class TestResumeRunAfterBlast:
         continue_run_from_extraction(
             run, format_check, extractions, db_session, storage.run_dir(run.id)
         )
+        return run
 
-        fake_result = BlastSearchResult(
-            hits=[
-                BlastHit(
-                    rank=1,
-                    species="Testus syntheticus",
-                    identity=99.0,
-                    coverage=98.0,
-                    evalue=0.0,
-                    bit_score=500.0,
-                    accession="REF001",
-                )
-            ],
-            database_version="NCBI nt (remote, live -- not version-pinned)",
-            query_length=700,
-            search_mode="remote",
-            remote_database="nt",
-        )
+    def test_first_tick_submits_and_stays_running_without_checking_status_yet(
+        self, db_session, temp_storage_root, monkeypatch
+    ):
+        import app.pipeline.ncbi_remote as ncbi_remote
+        from app.orchestration.execute import resume_run_after_blast
+
+        run = self._start_run(db_session, temp_storage_root)
+
         monkeypatch.setattr(
-            execute_module, "search_active_reference_database", lambda *a, **k: fake_result
+            ncbi_remote,
+            "submit_search",
+            lambda *a, **k: ncbi_remote.NcbiSubmission(rid="FAKE123", rtoe=30, raw_response="put"),
+        )
+        status_calls = []
+        monkeypatch.setattr(
+            ncbi_remote, "check_status", lambda rid, **k: status_calls.append(rid) or "READY"
         )
 
         result = resume_run_after_blast(run.id, db_session)
 
+        assert result.status == "in_progress"
+        assert status_calls == []  # RTOE=30s hasn't elapsed -- no status check yet
+
+        blast_stage = self._blast_stage(db_session, run)
+        assert blast_stage.status == "running"
+        assert blast_stage.stage_metadata["remote_job"]["rid"] == "FAKE123"
+        assert blast_stage.stage_metadata["remote_job"]["transport"] == "http"
+
+    def test_resumes_and_completes_the_run_once_the_search_is_ready(
+        self, db_session, temp_storage_root, monkeypatch
+    ):
+        import app.pipeline.ncbi_remote as ncbi_remote
+        from app.models.stage import Stage
+        from app.orchestration.execute import resume_run_after_blast
+        from app.schemas.blast import BlastHit
+
+        run = self._start_run(db_session, temp_storage_root)
+
+        monkeypatch.setattr(
+            ncbi_remote,
+            "submit_search",
+            lambda *a, **k: ncbi_remote.NcbiSubmission(rid="FAKE123", rtoe=0, raw_response="put"),
+        )
+        monkeypatch.setattr(ncbi_remote, "check_status", lambda rid, **k: "READY")
+        monkeypatch.setattr(
+            ncbi_remote,
+            "fetch_result",
+            lambda rid, *, max_hits, **k: ncbi_remote.NcbiFetchedResult(
+                query_length=700,
+                hits=[
+                    BlastHit(
+                        rank=1, species="Testus syntheticus", identity=99.0, coverage=98.0,
+                        evalue=0.0, bit_score=500.0, accession="REF001",
+                    )
+                ],
+                raw_response="<xml/>",
+            ),
+        )
+
+        resume_run_after_blast(run.id, db_session)  # tick 1: submit
+        self._make_due(db_session, self._blast_stage(db_session, run))
+        result = resume_run_after_blast(run.id, db_session)  # tick 2: ready -> finish
+
         assert result.status == "completed"
         assert result.current_stage == "report"
 
-        blast_stage = (
-            db_session.query(Stage)
-            .filter(Stage.run_id == run.id, Stage.stage_type == "blast")
-            .one()
-        )
+        blast_stage = self._blast_stage(db_session, run)
         assert blast_stage.status == "completed"
         assert blast_stage.output["search_mode"] == "remote"
+        assert blast_stage.output["remote_transport"] == "http"
 
         identification_stage = (
             db_session.query(Stage)
@@ -764,66 +834,88 @@ class TestResumeRunAfterBlast:
         assert report_path.is_file()
         assert report_path.read_bytes().startswith(b"%PDF")
 
-    def test_a_failed_remote_search_stops_the_run_cleanly(
+    def test_a_search_failure_reported_by_ncbi_stops_the_run_cleanly(
         self, db_session, temp_storage_root, monkeypatch
     ):
-        import app.orchestration.execute as execute_module
-        from app import storage
-        from app.models.stage import Stage
-        from app.orchestration.execute import continue_run_from_extraction, resume_run_after_blast
+        import app.pipeline.ncbi_remote as ncbi_remote
+        from app.orchestration.execute import resume_run_after_blast
 
-        good_seq = "".join(["ATCG"[i % 4] for i in range(700)])
-        good = ReadExtraction(raw_sequence=good_seq, raw_length=700, quality_scores=[40] * 700)
-        extractions = {"forward": good}
-        format_check = _format_check(["forward"])
-        run = _make_run(db_session, original_filenames=["forward.ab1"], config_overrides={})
-        _seed_stages_1_and_2(db_session, run, format_check, extractions)
+        run = self._start_run(db_session, temp_storage_root)
 
-        continue_run_from_extraction(
-            run, format_check, extractions, db_session, storage.run_dir(run.id)
+        monkeypatch.setattr(
+            ncbi_remote,
+            "submit_search",
+            lambda *a, **k: ncbi_remote.NcbiSubmission(rid="FAKE123", rtoe=0, raw_response="put"),
         )
+        resume_run_after_blast(run.id, db_session)  # tick 1: submit
+        self._make_due(db_session, self._blast_stage(db_session, run))
 
         def _raise(*args, **kwargs):
-            raise RuntimeError("Remote BLAST search against NCBI's 'nt' database timed out after 300s.")
+            raise ncbi_remote.NcbiSearchFailedError(
+                "NCBI reported the BLAST search (RID FAKE123) failed."
+            )
 
-        monkeypatch.setattr(execute_module, "search_active_reference_database", _raise)
+        monkeypatch.setattr(ncbi_remote, "check_status", _raise)
 
-        result = resume_run_after_blast(run.id, db_session)
+        result = resume_run_after_blast(run.id, db_session)  # tick 2: NCBI says no
 
         assert result.status == "failed"
         assert result.current_stage == "blast"
 
-        blast_stage = (
-            db_session.query(Stage)
-            .filter(Stage.run_id == run.id, Stage.stage_type == "blast")
-            .one()
-        )
+        blast_stage = self._blast_stage(db_session, run)
         assert blast_stage.status == "failed"
-        assert "timed out" in blast_stage.output["error"]
+        assert "failed" in blast_stage.output["error"]
 
-    def test_is_a_no_op_if_the_blast_stage_is_no_longer_running(
+    def test_an_unrecognized_ncbi_response_stops_the_run_with_a_distinct_message(
         self, db_session, temp_storage_root, monkeypatch
     ):
-        """Guards against double-processing -- e.g. a process restart
-        that picks the same "running" row up twice."""
+        """NCBI changing its response format must never be silently
+        misread as a biological result -- see
+        app.pipeline.ncbi_remote.UnrecognizedNcbiResponseError's own
+        docstring. This is the mitigation for exactly that risk."""
+        import app.pipeline.ncbi_remote as ncbi_remote
+        from app.orchestration.execute import resume_run_after_blast
+
+        run = self._start_run(db_session, temp_storage_root)
+
+        monkeypatch.setattr(
+            ncbi_remote,
+            "submit_search",
+            lambda *a, **k: ncbi_remote.NcbiSubmission(rid="FAKE123", rtoe=0, raw_response="put"),
+        )
+        resume_run_after_blast(run.id, db_session)  # tick 1: submit
+        self._make_due(db_session, self._blast_stage(db_session, run))
+
+        def _raise(*args, **kwargs):
+            raise ncbi_remote.UnrecognizedNcbiResponseError("response shape never seen before")
+
+        monkeypatch.setattr(ncbi_remote, "check_status", _raise)
+
+        result = resume_run_after_blast(run.id, db_session)
+
+        assert result.status == "failed"
+        blast_stage = self._blast_stage(db_session, run)
+        assert "didn't match any known shape" in blast_stage.output["error"]
+
+    def test_falls_back_to_the_subprocess_path_when_http_submission_fails(
+        self, db_session, temp_storage_root, monkeypatch
+    ):
+        """The one safe fallback trigger: submission itself never
+        reached NCBI in any form we could use, so nothing is lost by
+        trying the older blastn -remote subprocess path instead of
+        failing the run outright."""
         import app.orchestration.execute as execute_module
-        from app import storage
-        from app.models.stage import Stage
-        from app.orchestration.execute import continue_run_from_extraction, resume_run_after_blast
+        import app.pipeline.ncbi_remote as ncbi_remote
+        from app.orchestration.execute import resume_run_after_blast
         from app.schemas.blast import BlastHit, BlastSearchResult
 
-        good_seq = "".join(["ATCG"[i % 4] for i in range(700)])
-        good = ReadExtraction(raw_sequence=good_seq, raw_length=700, quality_scores=[40] * 700)
-        extractions = {"forward": good}
-        format_check = _format_check(["forward"])
-        run = _make_run(db_session, original_filenames=["forward.ab1"], config_overrides={})
-        _seed_stages_1_and_2(db_session, run, format_check, extractions)
+        run = self._start_run(db_session, temp_storage_root)
 
-        continue_run_from_extraction(
-            run, format_check, extractions, db_session, storage.run_dir(run.id)
-        )
+        def _raise(*args, **kwargs):
+            raise ncbi_remote.NcbiSubmissionFailedError("NCBI did not return a Request ID (RID).")
 
-        call_count = {"n": 0}
+        monkeypatch.setattr(ncbi_remote, "submit_search", _raise)
+
         fake_result = BlastSearchResult(
             hits=[
                 BlastHit(
@@ -834,16 +926,56 @@ class TestResumeRunAfterBlast:
             database_version="NCBI nt (remote, live -- not version-pinned)",
             query_length=700,
             search_mode="remote",
+            remote_database="nt",
+        )
+        monkeypatch.setattr(
+            execute_module, "search_active_reference_database", lambda *a, **k: fake_result
         )
 
-        def _fake_search(*args, **kwargs):
-            call_count["n"] += 1
-            return fake_result
+        result = resume_run_after_blast(run.id, db_session)
 
-        monkeypatch.setattr(execute_module, "search_active_reference_database", _fake_search)
+        assert result.status == "completed"
+        blast_stage = self._blast_stage(db_session, run)
+        assert blast_stage.output["remote_transport"] == "subprocess_fallback"
 
-        resume_run_after_blast(run.id, db_session)
-        result = resume_run_after_blast(run.id, db_session)  # second call -- blast is "completed" now
+    def test_is_a_no_op_once_the_blast_stage_is_no_longer_running(
+        self, db_session, temp_storage_root, monkeypatch
+    ):
+        """Guards against double-processing -- e.g. a process restart
+        that picks the same "running" row up twice."""
+        import app.pipeline.ncbi_remote as ncbi_remote
+        from app.orchestration.execute import resume_run_after_blast
+        from app.schemas.blast import BlastHit
 
-        assert call_count["n"] == 1
+        run = self._start_run(db_session, temp_storage_root)
+
+        monkeypatch.setattr(
+            ncbi_remote,
+            "submit_search",
+            lambda *a, **k: ncbi_remote.NcbiSubmission(rid="FAKE123", rtoe=0, raw_response="put"),
+        )
+        monkeypatch.setattr(ncbi_remote, "check_status", lambda rid, **k: "READY")
+        call_count = {"fetch": 0}
+
+        def _fetch(rid, *, max_hits, **k):
+            call_count["fetch"] += 1
+            return ncbi_remote.NcbiFetchedResult(
+                query_length=700,
+                hits=[
+                    BlastHit(
+                        rank=1, species="Testus syntheticus", identity=99.0, coverage=98.0,
+                        evalue=0.0, bit_score=500.0, accession="REF001",
+                    )
+                ],
+                raw_response="<xml/>",
+            )
+
+        monkeypatch.setattr(ncbi_remote, "fetch_result", _fetch)
+
+        resume_run_after_blast(run.id, db_session)  # tick 1: submit
+        self._make_due(db_session, self._blast_stage(db_session, run))
+        resume_run_after_blast(run.id, db_session)  # tick 2: ready -> finish
+        result = resume_run_after_blast(run.id, db_session)  # tick 3: already completed -- no-op
+
+        assert call_count["fetch"] == 1
         assert result.status == "completed"

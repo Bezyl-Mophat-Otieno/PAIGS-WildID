@@ -73,7 +73,8 @@ TrimResult.trim_params and identification's IdentificationResult.
 thresholds_applied already carry their own, so they aren't duplicated
 there.
 """
-from datetime import datetime, timezone
+import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -83,7 +84,9 @@ from app import storage
 from app.configuration import service as config_service
 from app.models.run import Run
 from app.models.stage import Stage
+from app.pipeline import ncbi_remote
 from app.pipeline.ab1_extraction import ReadExtraction, extract_reads_for_files
+from app.pipeline.blast import DEFAULT_REMOTE_TIMEOUT_SECONDS
 from app.pipeline.consensus import build_consensus
 from app.pipeline.fasta import generate_fasta, write_fasta_file
 from app.pipeline.format_check import check_format_for_files
@@ -97,6 +100,7 @@ from app.pipeline.usability_check import (
     check_usability_from_single_read,
 )
 from app.reference.publish import search_active_reference_database
+from app.schemas.blast import BlastSearchResult
 from app.schemas.consensus import ConsensusResult
 from app.schemas.fasta import FastaResult
 from app.schemas.format_check import FileFormatCheck
@@ -105,6 +109,8 @@ from app.schemas.report import ReportInput
 from app.schemas.sanity_check import SanityCheckResult
 from app.schemas.trim import TrimResult
 from app.schemas.usability_check import UsabilityCheckResult
+
+logger = logging.getLogger(__name__)
 
 
 class RunNotFoundError(Exception):
@@ -177,16 +183,19 @@ def _update_stage(
     output: Optional[dict] = None,
     metadata: Optional[dict] = None,
 ) -> Stage:
-    """Transitions an existing "running" stage row to its terminal state
-    in place, rather than inserting a second row for the same stage_type
-    the way _persist_stage always does. Only ever used for blast.mode=
-    "remote"'s running -> completed/failed transition: a "running" row
-    has no real output yet (output=None), so filling it in for the first
-    time here doesn't conflict with CLAUDE.md's "a stage's output, once
-    written, is never overwritten" -- nothing meaningful was written
-    until now. Every other stage_type only ever has one attempt and one
-    row, via _persist_stage(); this is the one exception, for the one
-    stage that can be observed mid-flight before it resolves.
+    """Updates an existing "running" stage row in place, rather than
+    inserting a second row for the same stage_type the way _persist_stage
+    always does. Only ever used for blast.mode="remote": either a
+    running -> running bookkeeping update (recording where the HTTP
+    submit/poll state machine has gotten to -- see _advance_remote_blast
+    -- output stays None throughout), or the eventual running ->
+    completed/failed transition. A "running" row has no real output yet
+    (output=None) until that terminal transition, so filling it in for
+    the first time there doesn't conflict with CLAUDE.md's "a stage's
+    output, once written, is never overwritten" -- nothing meaningful was
+    written until then. Every other stage_type only ever has one attempt
+    and one row, via _persist_stage(); this is the one exception, for the
+    one stage that can be observed mid-flight before it resolves.
     """
     stage.status = status
     stage.output = output
@@ -447,7 +456,11 @@ def continue_run_from_extraction(
         run,
         "blast",
         status="completed",
-        output=blast_result.model_dump(),
+        # mode="json" -- not just .model_dump() -- since BlastSearchResult's
+        # queried_at is a real datetime; the stages.output column is plain
+        # JSON, which the stdlib json module (SQLAlchemy's serializer here)
+        # cannot encode a datetime object into directly.
+        output=blast_result.model_dump(mode="json"),
         metadata={"thresholds": blast_kwargs},
     )
 
@@ -598,21 +611,237 @@ def _finish_identification_and_report(
     return run
 
 
+def _fallback_to_subprocess_search(
+    db: Session,
+    run: Run,
+    blast_stage: Stage,
+    query_fasta_path: Path,
+    blast_kwargs: dict,
+    reason: str,
+) -> Optional[BlastSearchResult]:
+    """Falls back to the pre-existing, unchanged blastn -remote subprocess
+    path (app.pipeline.blast.search_blast_remote, via
+    search_active_reference_database -- see app.reference.publish) when
+    NCBI's HTTP submission couldn't even be completed. This is the one
+    failure that's safe to fall back from: nothing has been committed to
+    NCBI yet at that point, so there's no risk of double-submitting or
+    abandoning an in-flight search the way falling back mid-poll would
+    risk. See app.pipeline.ncbi_remote's module docstring for the
+    specific failure mode (NCBI returning no RID at all) this guards.
+    """
+    logger.warning(
+        "NCBI HTTP submission failed for run %s (%s) -- falling back to the "
+        "blastn -remote subprocess path.",
+        run.id,
+        reason,
+    )
+    try:
+        result = search_active_reference_database(query_fasta_path, db, **blast_kwargs)
+    except RuntimeError as exc:
+        _update_stage(db, run, blast_stage, status="failed", output={"error": str(exc)})
+        _stop_run(db, run)
+        return None
+    return result.model_copy(update={"remote_transport": "subprocess_fallback"})
+
+
+def _advance_remote_blast(
+    db: Session,
+    run: Run,
+    blast_stage: Stage,
+    query_fasta_path: Path,
+    blast_kwargs: dict,
+    effective: Dict[str, object],
+) -> Optional[BlastSearchResult]:
+    """One tick of blast.mode="remote"'s non-blocking state machine --
+    called every time app.orchestration.background's poller picks up this
+    run's "running" blast stage. Does at most one cheap HTTP call per
+    invocation (submit, check status, or fetch the result), then returns
+    -- never blocks waiting for NCBI the way the old single-call subprocess
+    path did, which is the whole point: a slow search just gets checked
+    again next tick instead of being killed by a timeout.
+
+    Returns a real BlastSearchResult once the search is actually done
+    (via HTTP, or via the subprocess fallback above); returns None while
+    still waiting, or once a terminal failure has already been persisted
+    -- either way, the caller (resume_run_after_blast) has nothing further
+    to do this tick.
+    """
+    now = _utcnow()
+    job = (blast_stage.stage_metadata or {}).get("remote_job")
+
+    if job is None:
+        # Phase 1: submit. Nothing has been committed to NCBI if this
+        # fails, so falling back to the subprocess path here is free.
+        try:
+            submission = ncbi_remote.submit_search(
+                query_fasta_path,
+                database=blast_kwargs["remote_database"],
+                entrez_query=blast_kwargs.get("entrez_query", ""),
+                max_hits=blast_kwargs["max_hits"],
+            )
+        except ncbi_remote.NcbiSubmissionFailedError as exc:
+            return _fallback_to_subprocess_search(
+                db, run, blast_stage, query_fasta_path, blast_kwargs, str(exc)
+            )
+
+        # Wait exactly as long as NCBI's own RTOE estimate says, clamped
+        # to a sane range -- not an arbitrary fixed delay, and not an
+        # immediate re-check of a search NCBI just told us isn't ready.
+        wait_seconds = min(
+            max(
+                submission.rtoe or ncbi_remote.DEFAULT_POLL_INTERVAL_SECONDS,
+                ncbi_remote.MIN_INITIAL_WAIT_SECONDS,
+            ),
+            ncbi_remote.MAX_INITIAL_WAIT_SECONDS,
+        )
+        _update_stage(
+            db,
+            run,
+            blast_stage,
+            status="running",
+            metadata={
+                "thresholds": blast_kwargs,
+                "effective": effective,
+                "remote_job": {
+                    "transport": "http",
+                    "rid": submission.rid,
+                    "submitted_at": now.isoformat(),
+                    "next_check_at": (now + timedelta(seconds=wait_seconds)).isoformat(),
+                },
+            },
+        )
+        return None
+
+    next_check_at = datetime.fromisoformat(job["next_check_at"])
+    if now < next_check_at:
+        return None  # not due yet this tick -- no-op
+
+    rid = job["rid"]
+    submitted_at = datetime.fromisoformat(job["submitted_at"])
+    timeout_seconds = blast_kwargs.get("remote_timeout_seconds", DEFAULT_REMOTE_TIMEOUT_SECONDS)
+    if (now - submitted_at).total_seconds() > timeout_seconds:
+        # Unlike the old subprocess timeout, this never killed anything on
+        # NCBI's side -- the search may well still finish there. We just
+        # stop watching it and report it as an operational stop, same
+        # treatment CLAUDE.md already gives a missing reference database.
+        _update_stage(
+            db,
+            run,
+            blast_stage,
+            status="failed",
+            output={
+                "error": (
+                    f"Remote BLAST search against NCBI's "
+                    f"{blast_kwargs.get('remote_database')!r} database (RID {rid}) "
+                    f"did not complete within {timeout_seconds}s."
+                )
+            },
+        )
+        _stop_run(db, run)
+        return None
+
+    try:
+        status = ncbi_remote.check_status(rid)
+    except ncbi_remote.NcbiSearchFailedError as exc:
+        _update_stage(db, run, blast_stage, status="failed", output={"error": str(exc)})
+        _stop_run(db, run)
+        return None
+    except ncbi_remote.UnrecognizedNcbiResponseError as exc:
+        logger.error("Unrecognized NCBI response for run %s (RID %s): %s", run.id, rid, exc)
+        _update_stage(
+            db,
+            run,
+            blast_stage,
+            status="failed",
+            output={
+                "error": (
+                    f"NCBI's response while checking RID {rid} didn't match any "
+                    f"known shape -- NCBI may have changed its API. See server "
+                    f"logs for the raw response. ({exc})"
+                )
+            },
+        )
+        _stop_run(db, run)
+        return None
+
+    if status != "READY":
+        _update_stage(
+            db,
+            run,
+            blast_stage,
+            status="running",
+            metadata={
+                "thresholds": blast_kwargs,
+                "effective": effective,
+                "remote_job": {
+                    **job,
+                    "next_check_at": (
+                        now + timedelta(seconds=ncbi_remote.DEFAULT_POLL_INTERVAL_SECONDS)
+                    ).isoformat(),
+                },
+            },
+        )
+        return None
+
+    try:
+        fetched = ncbi_remote.fetch_result(rid, max_hits=blast_kwargs["max_hits"])
+    except ncbi_remote.NcbiSearchFailedError as exc:
+        _update_stage(db, run, blast_stage, status="failed", output={"error": str(exc)})
+        _stop_run(db, run)
+        return None
+    except ncbi_remote.UnrecognizedNcbiResponseError as exc:
+        logger.error("Unrecognized NCBI response for run %s (RID %s): %s", run.id, rid, exc)
+        _update_stage(
+            db,
+            run,
+            blast_stage,
+            status="failed",
+            output={
+                "error": (
+                    f"NCBI's response while fetching the result for RID {rid} "
+                    f"didn't match any known shape -- NCBI may have changed its "
+                    f"API. See server logs for the raw response. ({exc})"
+                )
+            },
+        )
+        _stop_run(db, run)
+        return None
+
+    return BlastSearchResult(
+        hits=fetched.hits,
+        database_version=(
+            f"NCBI {blast_kwargs['remote_database']} (remote, live -- not version-pinned)"
+        ),
+        query_length=fetched.query_length,
+        search_mode="remote",
+        remote_database=blast_kwargs["remote_database"],
+        entrez_query=blast_kwargs.get("entrez_query") or None,
+        queried_at=now,
+        raw_response=fetched.raw_response,
+        remote_transport="http",
+    )
+
+
 def resume_run_after_blast(run_id: str, db: Session) -> Run:
-    """Called by app.orchestration.background's poller once blast.mode=
-    "remote"'s real NCBI search is actually ready to run -- entirely
-    separate from whatever HTTP request originally called
-    continue_run_from_extraction() and enqueued it (that request has long
-    since returned). Nothing from that request's Python call stack
-    survives to here, so everything Stage 9-11 need is reconstructed
-    purely from this Run's own already-persisted Stage rows -- exactly
-    the same data _finish_identification_and_report() would have received
-    inline, just read back from storage instead of still sitting in local
-    variables.
+    """Called by app.orchestration.background's poller every time it sees
+    Stage 9 sitting at status="running" for blast.mode="remote" -- which,
+    unlike the old subprocess-blocking design, is now typically many
+    calls across a search's lifetime (submit, then however many status
+    checks until ready), not one. Entirely separate from whatever HTTP
+    request originally called continue_run_from_extraction() and enqueued
+    it (that request has long since returned). Nothing from that
+    request's Python call stack survives to here, so everything Stage
+    9-11 need is reconstructed purely from this Run's own already-
+    persisted Stage rows -- exactly the same data
+    _finish_identification_and_report() would have received inline, just
+    read back from storage instead of still sitting in local variables.
 
     Idempotent against being invoked twice for the same run (e.g. a
     process restart mid-poll): a no-op if Stage 9 isn't sitting at
-    status="running" any more.
+    status="running" any more. Most calls while still "running" are also
+    no-ops in practice -- see _advance_remote_blast, which does at most
+    one cheap HTTP call per invocation and returns None until the search
+    actually resolves.
     """
     run = db.get(Run, run_id)
     if run is None:
@@ -628,19 +857,24 @@ def resume_run_after_blast(run_id: str, db: Session) -> Run:
     effective = blast_stage.stage_metadata["effective"]
     query_fasta_path = run_dir / "query.fasta"
 
-    try:
-        blast_result = search_active_reference_database(query_fasta_path, db, **blast_kwargs)
-    except RuntimeError as exc:
-        _update_stage(db, run, blast_stage, status="failed", output={"error": str(exc)})
-        return _stop_run(db, run)
+    blast_result = _advance_remote_blast(
+        db, run, blast_stage, query_fasta_path, blast_kwargs, effective
+    )
+    if blast_result is None:
+        db.refresh(run)
+        return run
 
     _update_stage(
         db,
         run,
         blast_stage,
         status="completed",
-        output=blast_result.model_dump(),
-        metadata={"thresholds": blast_kwargs},
+        # mode="json" -- see the matching comment in _dispatch_blast's own
+        # local-mode persist above; this path always carries a real
+        # queried_at, so it hits the datetime-isn't-JSON-serializable gap
+        # in practice, not just in theory.
+        output=blast_result.model_dump(mode="json"),
+        metadata={"thresholds": blast_kwargs, "effective": effective},
     )
 
     def _per_slot(stage_type, schema_cls):
