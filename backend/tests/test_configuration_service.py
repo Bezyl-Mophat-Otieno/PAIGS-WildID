@@ -181,7 +181,7 @@ class TestKwargsForStage:
         assert kwargs == {
             "max_hits": 10,
             "mode": "remote",
-            "remote_database": "nt",
+            "remote_database": "core_nt",
             "entrez_query": "",
             "remote_timeout_seconds": 300,
         }

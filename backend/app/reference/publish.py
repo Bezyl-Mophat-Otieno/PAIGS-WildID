@@ -209,7 +209,7 @@ def search_active_reference_database(
     *,
     max_hits: int = DEFAULT_MAX_HITS,
     mode: str = "remote",
-    remote_database: str = "nt",
+    remote_database: str = "core_nt",
     entrez_query: str = "",
     remote_timeout_seconds: int = DEFAULT_REMOTE_TIMEOUT_SECONDS,
 ) -> BlastSearchResult:

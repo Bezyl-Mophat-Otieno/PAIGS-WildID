@@ -195,7 +195,7 @@ ATCGATCGATCGATCGATCGATCG
 
 **Remote by default, local selectable — and both fully auditable:**
 
-- **Remote (the default):** the search runs against NCBI's own live, public nucleotide database (`nt` by default; `core_nt`/`refseq_rna`/`refseq_genomic` selectable) via BLAST+'s own `-remote` mode — no locally-built reference index required, and not limited to whatever species a curated FASTA happens to include.
+- **Remote (the default):** the search runs against NCBI's own live, public nucleotide database (`core_nt` by default — NCBI's own deduplicated/filtered version of `nt`, meaningfully faster with little real coverage lost; `nt`/`refseq_rna`/`refseq_genomic` selectable) — no locally-built reference index required, and not limited to whatever species a curated FASTA happens to include.
 - **Local (selectable per run):** the search runs against this deployment's own curated, versioned reference database instead (built ahead of time — see below) — fully reproducible against a pinned reference version, at the cost of only covering the species that curated set contains.
 - **Why both, and why remote first:** an analyst must always know which one produced a given result, and the report must say so plainly — this is not a detail buried in metadata. Local search stays what it always was: a fixed, versioned, pinned-in-time reference set, so re-running the identical query later reproduces the identical result. Remote search trades that away — NCBI's own database changes over time, so the same query run again next month can legitimately return something different — in exchange for reach far beyond any curated set. The audit trail resolves this not by pretending remote search is reproducible, but by **caching the exact raw response BLAST returned, verbatim, against this run, at the moment it was made** — so what the identification was actually based on is permanently preserved as evidence, even though repeating the search later isn't guaranteed to reproduce it. A local search's own reference DB version already gives it that same guarantee for free, so nothing extra needs to be cached there.
 - **Narrowing/widening a remote search:** an optional NCBI Entrez-syntax restriction query (e.g. excluding `uncultured[Organism]`/`environmental sample[filter]` entries, or restricting to a taxonomic group) can be applied at the search itself, not filtered afterward — see Configuration model below.
@@ -275,7 +275,7 @@ Most config entries are numeric thresholds. Three are not — they're Stage 9's 
 | Key | Values | Default | What it controls |
 | --- | --- | --- | --- |
 | `blast.mode` | `remote` \| `local` | `remote` | Which database Stage 9 searches against — see Stage 9 above. |
-| `blast.remote_database` | `nt` \| `core_nt` \| `refseq_rna` \| `refseq_genomic` | `nt` | Which NCBI-hosted database a remote search targets; ignored in local mode. |
+| `blast.remote_database` | `nt` \| `core_nt` \| `refseq_rna` \| `refseq_genomic` | `core_nt` | Which NCBI-hosted database a remote search targets; ignored in local mode. |
 | `blast.entrez_query` | free text | *(blank)* | An optional NCBI Entrez-syntax restriction applied at the remote search itself (e.g. excluding `uncultured[Organism]`/`environmental sample[filter]` entries, or restricting to a taxonomic group); ignored in local mode. |
 
 - **Global defaults** apply unless overridden.

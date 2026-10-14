@@ -52,7 +52,7 @@ EXPECTED_DEFAULTS = {
 # constant cast through float(), and aren't checked against `bounds`.
 NON_NUMERIC_DEFAULTS = {
     "blast.mode": "remote",
-    "blast.remote_database": "nt",
+    "blast.remote_database": "core_nt",
     "blast.entrez_query": "",
     "bold_fetch.require_species_level": "required",
 }
@@ -121,11 +121,11 @@ class TestNonNumericEntries:
         assert definition.default == "remote"
         assert definition.choices == ("remote", "local")
 
-    def test_blast_remote_database_is_an_enum_with_nt_as_the_default(self):
+    def test_blast_remote_database_is_an_enum_with_core_nt_as_the_default(self):
         definition = CATALOG_BY_KEY["blast.remote_database"]
         assert definition.value_type == "enum"
-        assert definition.default == "nt"
-        assert set(definition.choices) >= {"nt", "refseq_rna", "refseq_genomic"}
+        assert definition.default == "core_nt"
+        assert set(definition.choices) >= {"nt", "core_nt", "refseq_rna", "refseq_genomic"}
 
     def test_blast_entrez_query_is_free_text_with_no_choices(self):
         definition = CATALOG_BY_KEY["blast.entrez_query"]

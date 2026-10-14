@@ -188,14 +188,19 @@ CATALOG = [
         choices=("remote", "local"),
     ),
     _entry(
-        "blast", "remote_database", "nt",
+        "blast", "remote_database", "core_nt",
         "Remote NCBI database",
         "Which NCBI-hosted nucleotide database a remote search targets. "
-        "nt is the full nucleotide collection (broadest, includes "
-        "unfiltered environmental/metagenomic submissions); core_nt is a "
-        "deduplicated/filtered nt; refseq_rna / refseq_genomic are "
-        "curated RefSeq sets (narrower, cleaner, may miss species with "
-        "no RefSeq entry). Ignored when blast.mode is 'local'.",
+        "core_nt (the default) is NCBI's own deduplicated/filtered "
+        "version of nt -- meaningfully fewer redundant/environmental "
+        "records for NCBI to search, which in practice means faster "
+        "results with little real coverage lost; nt is the full, "
+        "unfiltered nucleotide collection (broadest, but includes noisy "
+        "environmental/metagenomic submissions, and can take "
+        "significantly longer under real load); refseq_rna / "
+        "refseq_genomic are curated RefSeq sets (narrower, cleaner, may "
+        "miss species with no RefSeq entry). Ignored when blast.mode is "
+        "'local'.",
         choices=("nt", "core_nt", "refseq_rna", "refseq_genomic"),
     ),
     _entry(
