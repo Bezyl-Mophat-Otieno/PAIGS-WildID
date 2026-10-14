@@ -21,7 +21,16 @@ each one is handed to its own short-lived worker thread, so multiple
 analysts' remote searches can run concurrently rather than queueing
 behind each other. `_in_flight` tracks which run ids already have a
 worker thread dispatched, so the next poll tick doesn't double-dispatch
-the same job while it's still running.
+the same job while it's still running. `_is_due` additionally skips
+dispatching at all for a run that isn't actually due for its next check
+yet (per app.orchestration.execute's own submit -> poll -> fetch state
+machine) -- without it, every single tick would open a fresh worker
+thread/SQLite connection for every in-progress remote search for its
+entire duration, not just when there's real work to do; that sharp
+increase in connection churn compared to this module's original
+single-long-blocking-call design is exactly the kind of concurrent-
+access pressure that re-triggered the SQLite incident above once this
+state machine shipped.
 
 Known limitation: assumes a single application process. A multi-worker
 or multi-replica deployment would need an atomic claim step (e.g. an
@@ -40,6 +49,7 @@ to do there and is just thread churn/noise across the suite.
 import logging
 import os
 import threading
+from datetime import datetime, timezone
 from typing import Set
 
 from app.db import SessionLocal
@@ -53,6 +63,37 @@ _stop_event = threading.Event()
 _in_flight: Set[str] = set()
 _in_flight_lock = threading.Lock()
 _poller_thread: threading.Thread | None = None
+
+
+def _is_due(stage: Stage) -> bool:
+    """Whether this "running" blast stage is actually due for a check
+    this tick -- not just present. app.orchestration.execute's own
+    submit -> poll -> fetch state machine (see _advance_remote_blast)
+    stashes a next_check_at on the stage's own metadata precisely so this
+    decision can be made here, from data already loaded by _poll_once's
+    single query, with no extra DB round trip.
+
+    This matters well beyond efficiency: without it, every tick (every
+    POLL_INTERVAL_SECONDS) would dispatch a fresh worker thread -- and a
+    fresh SQLite connection -- for every in-progress remote search, for
+    its entire duration, even though most ticks have nothing to do until
+    next_check_at arrives (RTOE first, then ~60s after that). That's a
+    sharp increase in short-lived concurrent SQLite connections compared
+    to the old design's single long-held one, and it's exactly the kind
+    of concurrent-access pressure that already broke this app's SQLite
+    setup once before under a Docker bind-mount (see app.db's own
+    docstring on the WAL-mode incident) -- skipping the dispatch
+    entirely when nothing is due keeps connection churn back down to
+    "once per real check," not "once per tick."
+    """
+    job = (stage.stage_metadata or {}).get("remote_job")
+    if job is None:
+        return True  # not yet submitted -- always worth a dispatch
+    try:
+        next_check_at = datetime.fromisoformat(job["next_check_at"])
+    except (KeyError, TypeError, ValueError):
+        return True  # malformed/missing -- fail open rather than wedge the run
+    return datetime.now(timezone.utc) >= next_check_at
 
 
 def _process_run(run_id: str) -> None:
@@ -82,6 +123,8 @@ def _poll_once() -> None:
             .all()
         )
         for stage in pending:
+            if not _is_due(stage):
+                continue
             with _in_flight_lock:
                 if stage.run_id in _in_flight:
                     continue
