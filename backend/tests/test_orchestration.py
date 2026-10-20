@@ -834,6 +834,48 @@ class TestResumeRunAfterBlast:
         assert report_path.is_file()
         assert report_path.read_bytes().startswith(b"%PDF")
 
+    def test_exceeding_remote_timeout_seconds_stops_the_run_and_preserves_the_audit_trail(
+        self, db_session, temp_storage_root, monkeypatch
+    ):
+        """The exact path a real production run hit: NCBI genuinely hadn't
+        finished within blast.remote_timeout_seconds. Unlike the old
+        subprocess design, nothing on NCBI's side was ever killed -- this
+        only stops *us* from watching it -- but the failure must still
+        record which database/RID were in use, not wipe stage_metadata to
+        None the way a real bug here once did."""
+        import app.pipeline.ncbi_remote as ncbi_remote
+        from app.orchestration.execute import resume_run_after_blast
+
+        run = self._start_run(db_session, temp_storage_root)
+
+        monkeypatch.setattr(
+            ncbi_remote,
+            "submit_search",
+            lambda *a, **k: ncbi_remote.NcbiSubmission(rid="FAKE123", rtoe=0, raw_response="put"),
+        )
+        resume_run_after_blast(run.id, db_session)  # tick 1: submit
+
+        from datetime import datetime, timedelta, timezone
+
+        blast_stage = self._blast_stage(db_session, run)
+        metadata = dict(blast_stage.stage_metadata)
+        long_ago = datetime.now(timezone.utc) - timedelta(seconds=400)
+        metadata["remote_job"] = {
+            **metadata["remote_job"],
+            "submitted_at": long_ago.isoformat(),
+            "next_check_at": long_ago.isoformat(),
+        }
+        blast_stage.stage_metadata = metadata
+        db_session.commit()
+
+        result = resume_run_after_blast(run.id, db_session)  # tick 2: elapsed > 300s
+
+        assert result.status == "failed"
+        blast_stage = self._blast_stage(db_session, run)
+        assert "did not complete within" in blast_stage.output["error"]
+        assert blast_stage.stage_metadata["thresholds"]["remote_database"] == "core_nt"
+        assert blast_stage.stage_metadata["remote_job"]["rid"] == "FAKE123"
+
     def test_a_search_failure_reported_by_ncbi_stops_the_run_cleanly(
         self, db_session, temp_storage_root, monkeypatch
     ):
@@ -865,6 +907,11 @@ class TestResumeRunAfterBlast:
         blast_stage = self._blast_stage(db_session, run)
         assert blast_stage.status == "failed"
         assert "failed" in blast_stage.output["error"]
+        # The audit trail must survive a failure, not just a success -- a
+        # real production bug wiped stage_metadata to None on exactly this
+        # path, losing which database/RID a failed search had actually used.
+        assert blast_stage.stage_metadata["thresholds"]["remote_database"] == "core_nt"
+        assert blast_stage.stage_metadata["remote_job"]["rid"] == "FAKE123"
 
     def test_an_unrecognized_ncbi_response_stops_the_run_with_a_distinct_message(
         self, db_session, temp_storage_root, monkeypatch
@@ -896,6 +943,7 @@ class TestResumeRunAfterBlast:
         assert result.status == "failed"
         blast_stage = self._blast_stage(db_session, run)
         assert "didn't match any known shape" in blast_stage.output["error"]
+        assert blast_stage.stage_metadata["remote_job"]["rid"] == "FAKE123"
 
     def test_falls_back_to_the_subprocess_path_when_http_submission_fails(
         self, db_session, temp_storage_root, monkeypatch

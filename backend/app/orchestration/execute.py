@@ -611,12 +611,43 @@ def _finish_identification_and_report(
     return run
 
 
+def _fail_remote_blast(
+    db: Session,
+    run: Run,
+    blast_stage: Stage,
+    blast_kwargs: dict,
+    effective: Dict[str, object],
+    error_message: str,
+    *,
+    job: Optional[dict] = None,
+) -> None:
+    """Fails Stage 9 while preserving its audit trail -- the thresholds
+    actually used, the resolved config snapshot, and (once submitted) the
+    RID and submission timestamp. Every failure branch below goes through
+    this rather than calling _update_stage directly with no metadata,
+    which was silently wiping that record: a real bug found by a genuine
+    production timeout, whose failed Stage 9 row ended up with
+    stage_metadata=None -- no way to tell afterward which database or RID
+    had actually been in use, exactly when that's most worth knowing.
+    CLAUDE.md's own Stage schema lists metadata as "thresholds used,
+    versions, anything audit-relevant" with no carve-out for a failure.
+    """
+    metadata: Dict[str, object] = {"thresholds": blast_kwargs, "effective": effective}
+    if job is not None:
+        metadata["remote_job"] = job
+    _update_stage(
+        db, run, blast_stage, status="failed", output={"error": error_message}, metadata=metadata
+    )
+    _stop_run(db, run)
+
+
 def _fallback_to_subprocess_search(
     db: Session,
     run: Run,
     blast_stage: Stage,
     query_fasta_path: Path,
     blast_kwargs: dict,
+    effective: Dict[str, object],
     reason: str,
 ) -> Optional[BlastSearchResult]:
     """Falls back to the pre-existing, unchanged blastn -remote subprocess
@@ -638,8 +669,7 @@ def _fallback_to_subprocess_search(
     try:
         result = search_active_reference_database(query_fasta_path, db, **blast_kwargs)
     except RuntimeError as exc:
-        _update_stage(db, run, blast_stage, status="failed", output={"error": str(exc)})
-        _stop_run(db, run)
+        _fail_remote_blast(db, run, blast_stage, blast_kwargs, effective, str(exc))
         return None
     return result.model_copy(update={"remote_transport": "subprocess_fallback"})
 
@@ -681,7 +711,7 @@ def _advance_remote_blast(
             )
         except ncbi_remote.NcbiSubmissionFailedError as exc:
             return _fallback_to_subprocess_search(
-                db, run, blast_stage, query_fasta_path, blast_kwargs, str(exc)
+                db, run, blast_stage, query_fasta_path, blast_kwargs, effective, str(exc)
             )
 
         # Wait exactly as long as NCBI's own RTOE estimate says, clamped
@@ -724,44 +754,41 @@ def _advance_remote_blast(
         # NCBI's side -- the search may well still finish there. We just
         # stop watching it and report it as an operational stop, same
         # treatment CLAUDE.md already gives a missing reference database.
-        _update_stage(
+        _fail_remote_blast(
             db,
             run,
             blast_stage,
-            status="failed",
-            output={
-                "error": (
-                    f"Remote BLAST search against NCBI's "
-                    f"{blast_kwargs.get('remote_database')!r} database (RID {rid}) "
-                    f"did not complete within {timeout_seconds}s."
-                )
-            },
+            blast_kwargs,
+            effective,
+            (
+                f"Remote BLAST search against NCBI's "
+                f"{blast_kwargs.get('remote_database')!r} database (RID {rid}) "
+                f"did not complete within {timeout_seconds}s."
+            ),
+            job=job,
         )
-        _stop_run(db, run)
         return None
 
     try:
         status = ncbi_remote.check_status(rid)
     except ncbi_remote.NcbiSearchFailedError as exc:
-        _update_stage(db, run, blast_stage, status="failed", output={"error": str(exc)})
-        _stop_run(db, run)
+        _fail_remote_blast(db, run, blast_stage, blast_kwargs, effective, str(exc), job=job)
         return None
     except ncbi_remote.UnrecognizedNcbiResponseError as exc:
         logger.error("Unrecognized NCBI response for run %s (RID %s): %s", run.id, rid, exc)
-        _update_stage(
+        _fail_remote_blast(
             db,
             run,
             blast_stage,
-            status="failed",
-            output={
-                "error": (
-                    f"NCBI's response while checking RID {rid} didn't match any "
-                    f"known shape -- NCBI may have changed its API. See server "
-                    f"logs for the raw response. ({exc})"
-                )
-            },
+            blast_kwargs,
+            effective,
+            (
+                f"NCBI's response while checking RID {rid} didn't match any "
+                f"known shape -- NCBI may have changed its API. See server "
+                f"logs for the raw response. ({exc})"
+            ),
+            job=job,
         )
-        _stop_run(db, run)
         return None
 
     if status != "READY":
@@ -786,25 +813,23 @@ def _advance_remote_blast(
     try:
         fetched = ncbi_remote.fetch_result(rid, max_hits=blast_kwargs["max_hits"])
     except ncbi_remote.NcbiSearchFailedError as exc:
-        _update_stage(db, run, blast_stage, status="failed", output={"error": str(exc)})
-        _stop_run(db, run)
+        _fail_remote_blast(db, run, blast_stage, blast_kwargs, effective, str(exc), job=job)
         return None
     except ncbi_remote.UnrecognizedNcbiResponseError as exc:
         logger.error("Unrecognized NCBI response for run %s (RID %s): %s", run.id, rid, exc)
-        _update_stage(
+        _fail_remote_blast(
             db,
             run,
             blast_stage,
-            status="failed",
-            output={
-                "error": (
-                    f"NCBI's response while fetching the result for RID {rid} "
-                    f"didn't match any known shape -- NCBI may have changed its "
-                    f"API. See server logs for the raw response. ({exc})"
-                )
-            },
+            blast_kwargs,
+            effective,
+            (
+                f"NCBI's response while fetching the result for RID {rid} "
+                f"didn't match any known shape -- NCBI may have changed its "
+                f"API. See server logs for the raw response. ({exc})"
+            ),
+            job=job,
         )
-        _stop_run(db, run)
         return None
 
     return BlastSearchResult(
