@@ -25,6 +25,39 @@ assumed to always succeed. busy_timeout has no such filesystem
 requirement and is kept unconditionally -- it just makes a transient lock
 wait and retry instead of failing immediately, safe in either journal
 mode.
+
+A second, distinct Docker-bind-mount failure mode found in production
+(recurring three separate times against the same dev deployment): the
+underlying paigs.db file itself going missing out from under a still-
+running process -- confirmed via the container's own open file
+descriptors pointing at "paigs.db (deleted)" -- almost certainly Docker
+Desktop's virtiofs layer losing track of a long-lived open handle on a
+bind-mounted file across a host sleep/wake cycle, not anything this
+app's own code does. On a real local filesystem a deleted-but-open file
+keeps working fine (standard POSIX unlink semantics); over virtiofs it
+doesn't, and every connection already in SQLAlchemy's pool that had
+opened that now-gone file starts raising sqlite3.OperationalError("disk
+I/O error") on every query, forever, since nothing was checking those
+connections were still good before reusing them.
+
+pool_pre_ping=True alone does NOT fix this, despite being the usual
+answer to "a pooled connection went stale" -- verified directly against
+this SQLAlchemy version: SQLiteDialect_pysqlite.is_disconnect() only
+recognizes sqlite3.ProgrammingError("Cannot operate on a closed
+database."), not OperationalError("disk I/O error"), so pre-ping's own
+pre-flight check would hit the identical unrecognized error and not
+trigger a reconnect. It's kept anyway (harmless, and it does cover that
+other, real disconnect shape), but the actual fix for *this* error is
+the handle_error listener below -- SQLAlchemy's docs are explicit that
+pre-ping does not consult that event, so each failure mode needs its own
+handling. Setting context.is_disconnect = True there invalidates the
+whole pool on this specific error, so the very next request/poll tick
+opens a fresh connection against whatever file exists now, instead of
+reusing the same permanently-broken one -- turning "broken until a
+manual restart" into "logs one error, self-heals within one poll
+interval." See docker-compose.yml's own PAIGS_DATABASE_URL comment for
+the complementary fix (keeping the file off the bind-mounted path
+entirely, so this class of failure is avoided rather than just survived).
 """
 import os
 import sqlite3
@@ -36,7 +69,7 @@ DATABASE_URL = os.environ.get("PAIGS_DATABASE_URL", "sqlite:///./paigs.db")
 IS_SQLITE = DATABASE_URL.startswith("sqlite")
 
 connect_args = {"check_same_thread": False} if IS_SQLITE else {}
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
+engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
 
 if IS_SQLITE:
 
@@ -53,6 +86,20 @@ if IS_SQLITE:
             pass
         cursor.execute("PRAGMA busy_timeout=30000")
         cursor.close()
+
+    @event.listens_for(engine, "handle_error")
+    def _treat_disk_io_error_as_disconnect(context):
+        """A stale connection pointing at a since-deleted/recreated
+        paigs.db raises OperationalError("disk I/O error") on every
+        query -- not a shape SQLite's own dialect recognizes as a
+        disconnect (see module docstring), so without this, the same
+        broken connection keeps getting reused from the pool forever.
+        Marking it here invalidates the pool, so the next checkout opens
+        a fresh connection instead of repeating the same failure.
+        """
+        original = context.original_exception
+        if isinstance(original, sqlite3.OperationalError) and "disk I/O error" in str(original):
+            context.is_disconnect = True
 
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

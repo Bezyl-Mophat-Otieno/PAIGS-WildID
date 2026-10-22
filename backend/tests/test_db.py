@@ -12,7 +12,7 @@ WAL isn't practical to set up in a normal test environment.
 """
 import sqlite3
 
-from app.db import _set_sqlite_pragmas
+from app.db import _set_sqlite_pragmas, _treat_disk_io_error_as_disconnect
 
 
 class _FakeCursor:
@@ -66,3 +66,52 @@ class TestSetSqlitePragmas:
 
         assert "PRAGMA busy_timeout=30000" in conn._cursor.executed
         assert conn._cursor.closed
+
+
+class _FakeExceptionContext:
+    """Minimal stand-in for SQLAlchemy's real ExceptionContext -- only
+    the two attributes _treat_disk_io_error_as_disconnect actually reads/
+    writes, same spirit as _FakeConnection/_FakeCursor above."""
+
+    def __init__(self, original_exception):
+        self.original_exception = original_exception
+        self.is_disconnect = False
+
+
+class TestTreatDiskIoErrorAsDisconnect:
+    """A stale connection pointing at a since-deleted/recreated paigs.db
+    (a real, recurring production incident under a Docker bind-mount --
+    see app.db's own module docstring) raises sqlite3.OperationalError
+    ("disk I/O error") on every query, forever, because SQLite's own
+    SQLAlchemy dialect doesn't recognize that message as a disconnect
+    condition -- confirmed directly against SQLiteDialect_pysqlite.
+    is_disconnect(), which only matches "Cannot operate on a closed
+    database.". This listener is what actually makes the app self-heal:
+    without it, the exact same broken connection keeps getting reused
+    from the pool on every subsequent request/poll tick.
+    """
+
+    def test_marks_a_disk_io_error_as_a_disconnect(self):
+        context = _FakeExceptionContext(sqlite3.OperationalError("disk I/O error"))
+
+        _treat_disk_io_error_as_disconnect(context)
+
+        assert context.is_disconnect is True
+
+    def test_leaves_an_unrelated_operational_error_alone(self):
+        """Only this specific, confirmed-unrecognized message is
+        special-cased -- any other OperationalError (a genuine SQL
+        mistake, a real lock timeout) should be left to SQLAlchemy's own
+        normal error handling, not blanket-treated as a disconnect."""
+        context = _FakeExceptionContext(sqlite3.OperationalError("database is locked"))
+
+        _treat_disk_io_error_as_disconnect(context)
+
+        assert context.is_disconnect is False
+
+    def test_leaves_a_non_sqlite_exception_alone(self):
+        context = _FakeExceptionContext(ValueError("disk I/O error"))
+
+        _treat_disk_io_error_as_disconnect(context)
+
+        assert context.is_disconnect is False

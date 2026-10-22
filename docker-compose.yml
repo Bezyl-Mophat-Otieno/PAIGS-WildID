@@ -10,6 +10,22 @@ services:
       - "8000:8000"
     environment:
       # PAIGS_DATABASE_URL: postgresql://user:pass@db:5432/wildid  # uncomment for Postgres; defaults to SQLite otherwise
+      #
+      # Points the dev SQLite file at the wildid-storage *named volume*
+      # (below) instead of app.db's own default (a plain file under /app,
+      # the directory docker-compose.override.yml bind-mounts straight to
+      # the host for --reload). A real production incident, recurring
+      # three times: Docker Desktop's virtiofs bridge lost track of a
+      # long-lived open handle on that bind-mounted file (observed as the
+      # container's own open fds pointing at "paigs.db (deleted)"),
+      # leaving every pooled connection raising "disk I/O error" forever
+      # (see app.db's own docstring for the self-healing code-level fix,
+      # and why it's a second line of defense, not a substitute for this).
+      # wildid-storage is a real Docker-managed volume, not a host bind-
+      # mount -- it has never shown this failure, unlike the bind-mounted
+      # source tree. Uploaded run files already live there; this just
+      # keeps the operational database on the same, more reliable volume.
+      PAIGS_DATABASE_URL: sqlite:////app/storage/paigs.db
       PAIGS_STORAGE_ROOT: /app/storage
     volumes:
       - wildid-storage:/app/storage
