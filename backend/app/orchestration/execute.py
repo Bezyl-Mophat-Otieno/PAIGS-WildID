@@ -217,6 +217,29 @@ def _stop_run(db: Session, run: Run) -> Run:
     return run
 
 
+def _resolve_single_read_reason(
+    sanity_single_read_reason: Optional[str],
+    trims: Dict[str, TrimResult],
+    trimmed_surviving_slots: list,
+) -> Optional[str]:
+    """Stage 3's own single_read_reason only knows what Stage 3 itself
+    saw; a read can still pass that lenient check and trim down to
+    nothing at Stage 4 (see continue_run_from_extraction's own comment
+    at the call site). This derives the *report's* single_read_reason,
+    correcting for a trim-revealed dropout Stage 3 never knew about --
+    called independently from both the synchronous path
+    (continue_run_from_extraction) and the remote-mode reconstruction
+    (resume_run_after_blast, from Trim's own already-persisted output)
+    rather than baked into sanity_check's own persisted metadata, which
+    must only ever reflect what Stage 3 itself knew at the time.
+    """
+    if sanity_single_read_reason is not None:
+        return sanity_single_read_reason
+    if len(trims) == 2 and len(trimmed_surviving_slots) == 1:
+        return "qc_failure"
+    return sanity_single_read_reason
+
+
 def _resolve_file_paths(run: Run, import_stage: Stage) -> Dict[str, Path]:
     output = import_stage.output or {}
     slots = output.get("slots") or []
@@ -328,16 +351,20 @@ def continue_run_from_extraction(
     elif len(surviving_slots) == 1:
         single_read_reason = "qc_failure"
 
+    # Persisted immediately, before Stage 4 even runs -- not batched up
+    # with it -- so a crash anywhere later (trimming included) can never
+    # take this already-genuine result down with it. See
+    # TestStagesAreDurablyCommittedNotJustFlushed for exactly the
+    # production incident this guards (a later stage's unhandled
+    # exception must not roll back an earlier stage that actually
+    # finished).
     _persist_stage(
         db,
         run,
         "sanity_check",
         status="completed",
         output={slot: result.model_dump() for slot, result in sanity_results.items()},
-        metadata={
-            "single_read_reason": single_read_reason,
-            "thresholds": sanity_kwargs,
-        },
+        metadata={"single_read_reason": single_read_reason, "thresholds": sanity_kwargs},
     )
 
     if not surviving_slots:
@@ -356,9 +383,39 @@ def continue_run_from_extraction(
         metadata={"thresholds": trim_kwargs},
     )
 
+    # A read can pass Stage 3's deliberately lenient sanity check and
+    # still trim down to nothing at Stage 4 -- trim_read() already
+    # returns an empty TrimResult when no window clears min_window_size
+    # (see app.pipeline.trim's own docstring), but `surviving_slots`
+    # above only reflects Stage 3's verdict, computed before trimming
+    # ever ran. Re-deriving who actually survived *trimming* here is
+    # what Stage 5 (Orientation Detection) needs: feeding it an empty
+    # sequence previously crashed deep inside Biopython's pairwise
+    # aligner ("sequence has zero length") as an unhandled 500, instead
+    # of falling back the same way a genuine Stage 3 qc_failure already
+    # does -- a trim-induced dropout is the same practical outcome for
+    # the analyst, just discovered one stage later.
+    #
+    # single_read_reason is corrected here for this call's own report,
+    # not retroactively written back into sanity_check's own already-
+    # persisted metadata (which must only ever reflect what Stage 3
+    # itself knew, as a historical record, not be mutated once written).
+    # resume_run_after_blast's remote-mode reconstruction applies this
+    # exact same derivation independently, from Trim's own stored output
+    # -- see _resolve_single_read_reason below.
+    trimmed_surviving_slots = [slot for slot in surviving_slots if trims[slot].trimmed_length > 0]
+    single_read_reason = _resolve_single_read_reason(single_read_reason, trims, trimmed_surviving_slots)
+
+    if not trimmed_surviving_slots:
+        # Nothing usable survived trimming at all -- the same "both
+        # FAIL" treatment Stage 3 itself gets above, just discovered one
+        # stage later. Stage 7 has no sequence to evaluate either way, so
+        # there's nothing left for Orientation/Consensus/Usability to do.
+        return _stop_run(db, run)
+
     trimmed_quality = {
         slot: extractions[slot].quality_scores[trims[slot].trim_start : trims[slot].trim_end]
-        for slot in surviving_slots
+        for slot in trimmed_surviving_slots
     }
 
     orientation_result = None
@@ -366,7 +423,7 @@ def continue_run_from_extraction(
     consensus_result = None
     usability_kwargs = config_service.kwargs_for_stage(effective, "usability_check")
 
-    if len(surviving_slots) == 2:
+    if len(trimmed_surviving_slots) == 2:
         orientation_kwargs = config_service.kwargs_for_stage(effective, "orientation")
         orientation_result = detect_orientation(
             trims["forward"].trimmed_sequence,
@@ -406,7 +463,7 @@ def continue_run_from_extraction(
     else:
         _persist_stage(db, run, "orientation", status="skipped")
         _persist_stage(db, run, "consensus", status="skipped")
-        only_slot = surviving_slots[0]
+        only_slot = trimmed_surviving_slots[0]
         usability = check_usability_from_single_read(
             trims[only_slot], trimmed_quality[only_slot], **usability_kwargs
         )
@@ -925,6 +982,14 @@ def resume_run_after_blast(run_id: str, db: Session) -> Run:
     )
     thresholds_used = _build_thresholds_used(sanity_kwargs, usability_kwargs, blast_kwargs, orientation_kwargs)
 
+    trims_for_report = _per_slot("trim", TrimResult)
+    trimmed_surviving_slots = [
+        slot for slot, result in trims_for_report.items() if result.trimmed_length > 0
+    ]
+    single_read_reason = _resolve_single_read_reason(
+        sanity_stage.stage_metadata.get("single_read_reason"), trims_for_report, trimmed_surviving_slots
+    )
+
     return _finish_identification_and_report(
         db,
         run,
@@ -932,9 +997,9 @@ def resume_run_after_blast(run_id: str, db: Session) -> Run:
         blast_result=blast_result,
         format_check=_per_slot("format_check", FileFormatCheck),
         sanity_results=_per_slot("sanity_check", SanityCheckResult),
-        trims=_per_slot("trim", TrimResult),
+        trims=trims_for_report,
         ab1_extraction=_per_slot("ab1_extraction", ReadExtraction),
-        single_read_reason=sanity_stage.stage_metadata.get("single_read_reason"),
+        single_read_reason=single_read_reason,
         orientation_result=_single("orientation", OrientationResult),
         consensus_result=_single("consensus", ConsensusResult),
         usability=UsabilityCheckResult(**usability_stage.output),

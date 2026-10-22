@@ -320,6 +320,101 @@ class TestContinueRunFromExtractionBranching:
         assert result.status == "failed"
         assert result.current_stage == "sanity_check"
 
+    def test_a_read_that_trims_to_nothing_falls_back_to_single_read_instead_of_crashing(
+        self, db_session, temp_reference_data_root, tmp_path
+    ):
+        """The real production bug: a read can pass Stage 3's lenient
+        sanity check (real bases, reasonable length) and still trim down
+        to an empty sequence at Stage 4, if its quality never clears the
+        trim threshold anywhere. Previously `surviving_slots` only ever
+        reflected Stage 3's verdict, so this read was still treated as a
+        real second read -- Orientation Detection then crashed deep
+        inside Biopython's pairwise aligner ("sequence has zero length")
+        as an unhandled 500, instead of falling back to the single-read
+        path the same way a genuine Stage 3 qc_failure already does.
+        """
+        from app.orchestration.execute import continue_run_from_extraction
+
+        good_seq = "".join(["ATCG"[i % 4] for i in range(700)])
+        good = ReadExtraction(raw_sequence=good_seq, raw_length=700, quality_scores=[40] * 700)
+        # Passes Stage 3 (real bases, length well above the floor) but
+        # every base is below the Q20 trim threshold -- trim_read()'s own
+        # best-window scan never finds a positive-sum window, so this
+        # trims down to "" (see app.pipeline.trim.trim_read).
+        uniformly_low_quality = ReadExtraction(
+            raw_sequence="".join(["ATCG"[i % 4] for i in range(700)]),
+            raw_length=700,
+            quality_scores=[10] * 700,
+        )
+        extractions = {"forward": good, "reverse": uniformly_low_quality}
+        format_check = _format_check(["forward", "reverse"])
+        run = _make_run(db_session)
+        _publish_matching_reference(db_session, temp_reference_data_root, tmp_path, good_seq)
+
+        result = continue_run_from_extraction(
+            run, format_check, extractions, db_session, tmp_path / "run_storage"
+        )  # must not raise
+
+        assert result.status == "completed"
+
+        from app.models.stage import Stage
+
+        # Stage 3 itself genuinely saw two survivors -- its own record
+        # reflects only what it knew at the time, by design (see
+        # _resolve_single_read_reason's own docstring), so this stays
+        # None rather than being retroactively rewritten.
+        sanity_stage = (
+            db_session.query(Stage)
+            .filter(Stage.run_id == run.id, Stage.stage_type == "sanity_check")
+            .one()
+        )
+        assert sanity_stage.stage_metadata.get("single_read_reason") is None
+
+        orientation_stage = (
+            db_session.query(Stage)
+            .filter(Stage.run_id == run.id, Stage.stage_type == "orientation")
+            .one()
+        )
+        assert orientation_stage.status == "skipped"
+        consensus_stage = (
+            db_session.query(Stage)
+            .filter(Stage.run_id == run.id, Stage.stage_type == "consensus")
+            .one()
+        )
+        assert consensus_stage.status == "skipped"
+
+    def test_both_reads_trimming_to_nothing_stops_the_run(
+        self, db_session, tmp_path
+    ):
+        """The symmetric case: if trimming wipes out *both* reads, there's
+        nothing left for Orientation/Consensus/Usability to evaluate --
+        the same "both FAIL" treatment Stage 3 itself gets, just
+        discovered one stage later."""
+        from app.orchestration.execute import continue_run_from_extraction
+
+        uniformly_low_quality = ReadExtraction(
+            raw_sequence="".join(["ATCG"[i % 4] for i in range(700)]),
+            raw_length=700,
+            quality_scores=[10] * 700,
+        )
+        extractions = {"forward": uniformly_low_quality, "reverse": uniformly_low_quality}
+        format_check = _format_check(["forward", "reverse"])
+        run = _make_run(db_session)
+
+        result = continue_run_from_extraction(
+            run, format_check, extractions, db_session, tmp_path / "run_storage"
+        )  # must not raise
+
+        assert result.status == "failed"
+        assert result.current_stage == "trim"
+
+        from app.models.stage import Stage
+
+        stage_types = {
+            s.stage_type for s in db_session.query(Stage).filter(Stage.run_id == run.id).all()
+        }
+        assert stage_types == {"sanity_check", "trim"}
+
     def test_one_of_two_failing_sanity_continues_single_read_with_reason_recorded(
         self, db_session, temp_reference_data_root, tmp_path
     ):

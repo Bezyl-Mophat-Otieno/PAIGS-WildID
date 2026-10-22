@@ -131,6 +131,8 @@ Each box above is one **Stage** record: it has a defined input, a defined output
 
 **Output:** per file, e.g. `{ read_a: { trimmed_sequence: "ATCGATCG...", trimmed_length: 694, trim_params: { quality_threshold: 20 } } }`.
 
+**A read that trims down to nothing is a QC failure discovered one stage late, not a crash.** Stage 3's check is deliberately lenient (a read can pass it with mediocre-but-not-catastrophic quality throughout), so a read can clear Stage 3 and still have no window here that clears the quality threshold — `trimmed_length: 0`. Orchestration re-checks survivors against Stage 4's own output, not just Stage 3's, before deciding whether to proceed to Orientation Detection: a trim-induced dropout falls back to the single-read path exactly like a genuine Stage 3 `qc_failure` does (never handed to Stage 5, which has no defined behavior for an empty sequence). If both reads trim to nothing, the run stops here, the same "both FAIL" treatment Stage 3 itself gives.
+
 ## Stage 5 — Orientation detection
 
 **Only runs when two reads survived Trimming.** A forward and reverse read cover the same physical DNA fragment but from opposite ends, reading opposite strands — so before they can be compared, the system needs to know which orientation each is actually in.
