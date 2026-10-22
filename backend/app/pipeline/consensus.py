@@ -22,12 +22,23 @@ Tool: built on the same Bio.Align alignment approach as Stage 5 (shared
 config in app/pipeline/_alignment.py) plus a small IUPAC ambiguity-code
 lookup table, per CLAUDE.md's own tooling note.
 
-Scope limitation (documented, not silently wrong): the merge below
-assumes the overlap is a single ungapped alignment block, i.e. no
-insertions/deletions within the overlap -- reasonable for short,
-already-trimmed Sanger reads, but a real indel inside the overlap isn't
-handled yet. `build_consensus` raises a clear error rather than guessing
-if the re-run alignment doesn't come back as exactly one block.
+Gaps within the overlap (a real indel between the two reads -- most
+often a homopolymer run miscalled a base or two different in length by
+each read, a well-known Sanger artifact): the overlap alignment can come
+back as more than one ungapped block, with a gap on one side between
+consecutive blocks. Each block is merged exactly like a single-block
+overlap always was (the same resolve_base() rules, unchanged); a gap
+between two blocks has only one read with real bases there at all, so
+there's nothing to reconcile -- that read's own call and quality are
+used as-is, recorded with method="gap_single_read" (not "ambiguous":
+there's no disagreement, just a position only one read can speak to).
+`max_gap_length` bounds how large a single gap is trusted as routine
+sequencing noise versus treated as evidence these reads may not be a
+genuine single-fragment overlap at all -- `build_consensus` raises a
+clear error rather than silently stitching together two reads across a
+gap that large. A gap appearing on *both* sides between the same two
+blocks (not a single-sided indel at all) also raises -- genuinely not
+supported, rather than guessing which side to trust.
 
 Per-position quality, carried forward alongside the merged base (added
 because Stage 7's "minimum mean quality of the surviving sequence" rule
@@ -46,11 +57,11 @@ return value, `method`) and `build_consensus` records one
 ResolvedPosition per resolved overlap position -- the complement of
 ambiguous_positions, and the direct answer to "extend the Consensus
 stage to record every resolved position, not just the unresolved ones
-... to show an analyst 'here's what changed and why'". `method` is
-always one of this module's own three rules above (agreement,
-ambiguity-consistency, quality-tiebreak) -- there's no separate
-"resolution algorithm" to document, this is just naming the branch of
-the same logic that already decided the base.
+... to show an analyst 'here's what changed and why'". `method` is one
+of this module's three per-position comparison rules (agreement,
+ambiguity-consistency, quality-tiebreak), or "gap_single_read" for a
+position inside a gap between aligned blocks, decided by the simpler
+rule above (no comparison possible -- only one read has a call there).
 """
 from typing import Dict, FrozenSet, List, Optional, Tuple
 
@@ -153,34 +164,33 @@ def _oriented_reverse(
     raise ValueError(f"Unrecognized orientation value: {orientation.orientation!r}")
 
 
-def build_consensus(
+# Pending real domain review, same status as every other threshold in
+# this app. A real Sanger homopolymer miscall is almost always off by
+# just 1-2 bases; this leaves some headroom while still refusing a gap
+# large enough to suggest the two reads aren't a genuine single-fragment
+# overlap at all (see module docstring).
+DEFAULT_MAX_GAP_LENGTH = 5
+
+
+def _merge_block(
     forward_sequence: str,
     forward_quality: List[int],
-    reverse_sequence: str,
-    reverse_quality: List[int],
-    orientation: OrientationResult,
-) -> ConsensusResult:
-    oriented_reverse_sequence, oriented_reverse_quality = _oriented_reverse(
-        reverse_sequence, reverse_quality, orientation
-    )
-
-    alignment = build_pairwise_aligner().align(forward_sequence, oriented_reverse_sequence)[0]
-    target_blocks, query_blocks = alignment.aligned
-    if len(target_blocks) != 1:
-        raise ValueError(
-            "Consensus building only supports a single ungapped overlap region "
-            f"in this MVP; found {len(target_blocks)} aligned blocks instead."
-        )
-
-    t_start, t_end = target_blocks[0]
-    q_start, q_end = query_blocks[0]
-    overlap_length = t_end - t_start
-
-    merged_overlap: List[str] = []
-    merged_overlap_quality: List[int] = []
-    ambiguous_offsets: List[int] = []
-    resolved_offsets: List[ResolvedPosition] = []
-    for i in range(overlap_length):
+    oriented_reverse_sequence: str,
+    oriented_reverse_quality: List[int],
+    t_start: int,
+    q_start: int,
+    length: int,
+    offset: int,
+    merged_overlap: List[str],
+    merged_overlap_quality: List[int],
+    ambiguous_offsets: List[int],
+    resolved_offsets: List[ResolvedPosition],
+) -> int:
+    """Merges one ungapped aligned block via resolve_base()'s own
+    per-position rules, exactly as the single-block case always has.
+    Returns the next offset (this module's running position within the
+    merged overlap, before the final prefix-length shift)."""
+    for i in range(length):
         fwd_base = forward_sequence[t_start + i]
         fwd_quality = forward_quality[t_start + i]
         rev_base = oriented_reverse_sequence[q_start + i]
@@ -191,11 +201,11 @@ def build_consensus(
         merged_overlap.append(base)
         merged_overlap_quality.append(quality)
         if is_ambiguous:
-            ambiguous_offsets.append(i)
+            ambiguous_offsets.append(offset)
         else:
             resolved_offsets.append(
                 ResolvedPosition(
-                    position=i,  # offset for now -- shifted to an absolute position below
+                    position=offset,  # shifted to an absolute position below
                     forward_base=fwd_base,
                     forward_quality=fwd_quality,
                     reverse_base=rev_base,
@@ -206,13 +216,127 @@ def build_consensus(
                     method=method,
                 )
             )
+        offset += 1
+    return offset
 
-    prefix = forward_sequence[:t_start]
-    suffix = oriented_reverse_sequence[q_end:]
+
+def _merge_gap(
+    side: str,
+    sequence: str,
+    quality: List[int],
+    start: int,
+    length: int,
+    offset: int,
+    merged_overlap: List[str],
+    merged_overlap_quality: List[int],
+    resolved_offsets: List[ResolvedPosition],
+) -> int:
+    """Fills a gap between two aligned blocks -- only `side` has a real
+    base here, so there's nothing to reconcile; that read's own call and
+    quality are used as-is. Never ambiguous (no disagreement exists)."""
+    for i in range(length):
+        base = sequence[start + i]
+        base_quality = quality[start + i]
+        merged_overlap.append(base)
+        merged_overlap_quality.append(base_quality)
+        resolved_offsets.append(
+            ResolvedPosition(
+                position=offset,
+                forward_base=base if side == "forward" else None,
+                forward_quality=base_quality if side == "forward" else None,
+                reverse_base=base if side == "reverse" else None,
+                reverse_quality=base_quality if side == "reverse" else None,
+                resolved_base=base,
+                resolved_quality=base_quality,
+                changed=False,
+                method="gap_single_read",
+            )
+        )
+        offset += 1
+    return offset
+
+
+def build_consensus(
+    forward_sequence: str,
+    forward_quality: List[int],
+    reverse_sequence: str,
+    reverse_quality: List[int],
+    orientation: OrientationResult,
+    *,
+    max_gap_length: int = DEFAULT_MAX_GAP_LENGTH,
+) -> ConsensusResult:
+    oriented_reverse_sequence, oriented_reverse_quality = _oriented_reverse(
+        reverse_sequence, reverse_quality, orientation
+    )
+
+    alignment = build_pairwise_aligner().align(forward_sequence, oriented_reverse_sequence)[0]
+    target_blocks, query_blocks = alignment.aligned
+    if len(target_blocks) == 0:
+        raise ValueError("Consensus building found no aligned overlap at all between the reads.")
+
+    merged_overlap: List[str] = []
+    merged_overlap_quality: List[int] = []
+    ambiguous_offsets: List[int] = []
+    resolved_offsets: List[ResolvedPosition] = []
+    offset = 0
+
+    for block_index, ((t_start, t_end), (q_start, q_end)) in enumerate(
+        zip(target_blocks, query_blocks)
+    ):
+        offset = _merge_block(
+            forward_sequence, forward_quality, oriented_reverse_sequence, oriented_reverse_quality,
+            t_start, q_start, t_end - t_start, offset,
+            merged_overlap, merged_overlap_quality, ambiguous_offsets, resolved_offsets,
+        )
+
+        if block_index + 1 == len(target_blocks):
+            break
+
+        next_t_start, _ = target_blocks[block_index + 1]
+        next_q_start, _ = query_blocks[block_index + 1]
+        forward_gap_length = next_t_start - t_end
+        reverse_gap_length = next_q_start - q_end
+
+        if forward_gap_length > 0 and reverse_gap_length > 0:
+            # A true single-sided indel never produces a gap on both
+            # sides between the same two blocks -- not supported, rather
+            # than guessing which side to trust.
+            raise ValueError(
+                "Consensus building found a gap on both reads between aligned "
+                "blocks -- not a simple single-sided indel; not supported in "
+                "this MVP."
+            )
+
+        gap_length = max(forward_gap_length, reverse_gap_length)
+        if gap_length > max_gap_length:
+            raise ValueError(
+                f"Consensus building found a {gap_length}bp gap between aligned "
+                f"blocks, exceeding the configured max_gap_length of "
+                f"{max_gap_length}bp -- too large to treat as routine Sanger "
+                "sequencing noise."
+            )
+
+        if forward_gap_length > 0:
+            offset = _merge_gap(
+                "forward", forward_sequence, forward_quality, t_end, forward_gap_length,
+                offset, merged_overlap, merged_overlap_quality, resolved_offsets,
+            )
+        elif reverse_gap_length > 0:
+            offset = _merge_gap(
+                "reverse", oriented_reverse_sequence, oriented_reverse_quality, q_end,
+                reverse_gap_length, offset, merged_overlap, merged_overlap_quality, resolved_offsets,
+            )
+        # else: adjacent blocks with no real gap at all -- shouldn't occur
+        # from Biopython's own block-splitting, but a no-op is safe either way.
+
+    first_t_start = target_blocks[0][0]
+    last_q_end = query_blocks[-1][1]
+    prefix = forward_sequence[:first_t_start]
+    suffix = oriented_reverse_sequence[last_q_end:]
     consensus_sequence = prefix + "".join(merged_overlap) + suffix
 
-    prefix_quality = forward_quality[:t_start]
-    suffix_quality = oriented_reverse_quality[q_end:]
+    prefix_quality = forward_quality[:first_t_start]
+    suffix_quality = oriented_reverse_quality[last_q_end:]
     quality_scores = prefix_quality + merged_overlap_quality + suffix_quality
 
     resolved_positions = [

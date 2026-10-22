@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
 from app.pipeline.blast import DEFAULT_MAX_HITS, DEFAULT_REMOTE_TIMEOUT_SECONDS
+from app.pipeline.consensus import DEFAULT_MAX_GAP_LENGTH
 from app.pipeline.identification import (
     DEFAULT_AMBIGUOUS_MARGIN_PCT,
     DEFAULT_MIN_COVERAGE_PCT,
@@ -140,6 +141,20 @@ CATALOG = [
         "Minimum fraction of matching bases within the overlap for the "
         "two reads to be accepted as a genuine forward/reverse pair.",
         (0.0, 1.0),
+    ),
+    _entry(
+        "consensus", "max_gap_length", DEFAULT_MAX_GAP_LENGTH,
+        "Max gap length (bp)",
+        "Maximum length of a single gap (indel) between the forward and "
+        "reverse reads that consensus building will fill in from "
+        "whichever read has real bases there, rather than stopping the "
+        "run. A short gap (commonly 1-2bp) is usually a real Sanger "
+        "artifact -- most often a homopolymer run miscalled a base or "
+        "two different in length by each read. A gap longer than this is "
+        "treated as evidence the two reads may not be a genuine "
+        "single-fragment overlap at all, rather than routine sequencing "
+        "noise to silently stitch across.",
+        (0, None),
     ),
     _entry(
         "usability_check", "min_length", DEFAULT_MIN_LENGTH,

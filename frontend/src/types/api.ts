@@ -126,14 +126,17 @@ export interface OrientationMetadata {
 
 export interface ResolvedPosition {
   position: number
-  forward_base: string
-  forward_quality: number
-  reverse_base: string
-  reverse_quality: number
+  // null on whichever side has no base at all -- only "gap_single_read"
+  // positions (a real indel between the reads) have a null side; every
+  // other method always has both.
+  forward_base: string | null
+  forward_quality: number | null
+  reverse_base: string | null
+  reverse_quality: number | null
   resolved_base: string
   resolved_quality: number
   changed: boolean
-  method: "agreement" | "ambiguity_consistency" | "quality_tiebreak"
+  method: "agreement" | "ambiguity_consistency" | "quality_tiebreak" | "gap_single_read"
 }
 export interface ConsensusOutput {
   consensus_sequence: string

@@ -421,6 +421,7 @@ def continue_run_from_extraction(
     orientation_result = None
     orientation_kwargs = None
     consensus_result = None
+    consensus_kwargs = None
     usability_kwargs = config_service.kwargs_for_stage(effective, "usability_check")
 
     if len(trimmed_surviving_slots) == 2:
@@ -443,6 +444,7 @@ def continue_run_from_extraction(
             _persist_stage(db, run, "consensus", status="skipped")
             return _stop_run(db, run)
 
+        consensus_kwargs = config_service.kwargs_for_stage(effective, "consensus")
         try:
             consensus_result = build_consensus(
                 trims["forward"].trimmed_sequence,
@@ -450,13 +452,22 @@ def continue_run_from_extraction(
                 trims["reverse"].trimmed_sequence,
                 trimmed_quality["reverse"],
                 orientation_result,
+                **consensus_kwargs,
             )
         except ValueError as exc:
-            _persist_stage(db, run, "consensus", status="failed", output={"error": str(exc)})
+            _persist_stage(
+                db, run, "consensus", status="failed", output={"error": str(exc)},
+                metadata={"thresholds": consensus_kwargs},
+            )
             return _stop_run(db, run)
 
         _persist_stage(
-            db, run, "consensus", status="completed", output=consensus_result.model_dump()
+            db,
+            run,
+            "consensus",
+            status="completed",
+            output=consensus_result.model_dump(),
+            metadata={"thresholds": consensus_kwargs},
         )
         usability = check_usability_from_consensus(consensus_result, **usability_kwargs)
         sequence_for_fasta = consensus_result.consensus_sequence
@@ -521,7 +532,9 @@ def continue_run_from_extraction(
         metadata={"thresholds": blast_kwargs},
     )
 
-    thresholds_used = _build_thresholds_used(sanity_kwargs, usability_kwargs, blast_kwargs, orientation_kwargs)
+    thresholds_used = _build_thresholds_used(
+        sanity_kwargs, usability_kwargs, blast_kwargs, orientation_kwargs, consensus_kwargs
+    )
 
     return _finish_identification_and_report(
         db,
@@ -542,7 +555,9 @@ def continue_run_from_extraction(
     )
 
 
-def _build_thresholds_used(sanity_kwargs, usability_kwargs, blast_kwargs, orientation_kwargs):
+def _build_thresholds_used(
+    sanity_kwargs, usability_kwargs, blast_kwargs, orientation_kwargs, consensus_kwargs=None
+):
     """Only the stages whose own result schema doesn't already carry the
     thresholds it used -- TrimResult.trim_params and IdentificationResult.
     thresholds_applied already do, so they aren't duplicated here."""
@@ -553,6 +568,8 @@ def _build_thresholds_used(sanity_kwargs, usability_kwargs, blast_kwargs, orient
     }
     if orientation_kwargs is not None:
         thresholds_used["orientation"] = orientation_kwargs
+    if consensus_kwargs is not None:
+        thresholds_used["consensus"] = consensus_kwargs
     return thresholds_used
 
 
@@ -980,7 +997,17 @@ def resume_run_after_blast(run_id: str, db: Session) -> Run:
         if orientation_stage is not None and orientation_stage.status != "skipped"
         else None
     )
-    thresholds_used = _build_thresholds_used(sanity_kwargs, usability_kwargs, blast_kwargs, orientation_kwargs)
+    consensus_stage = stages.get("consensus")
+    consensus_kwargs = (
+        consensus_stage.stage_metadata["thresholds"]
+        if consensus_stage is not None
+        and consensus_stage.status != "skipped"
+        and consensus_stage.stage_metadata is not None
+        else None
+    )
+    thresholds_used = _build_thresholds_used(
+        sanity_kwargs, usability_kwargs, blast_kwargs, orientation_kwargs, consensus_kwargs
+    )
 
     trims_for_report = _per_slot("trim", TrimResult)
     trimmed_surviving_slots = [

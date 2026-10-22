@@ -1,11 +1,12 @@
 import type { ConfigItem, StageType } from "@/types/api"
 
-// Display order/labels for grouping the 13 thresholds by pipeline stage --
+// Display order/labels for grouping the thresholds by pipeline stage --
 // matches CLAUDE.md's stage sequence, not alphabetical or catalog order.
 export const THRESHOLD_STAGE_ORDER: StageType[] = [
   "sanity_check",
   "trim",
   "orientation",
+  "consensus",
   "usability_check",
   "blast",
   "identification",
@@ -15,6 +16,7 @@ export const THRESHOLD_STAGE_LABELS: Partial<Record<StageType, string>> = {
   sanity_check: "Coarse Sanity Check",
   trim: "Trimming",
   orientation: "Orientation Detection",
+  consensus: "Consensus Building",
   usability_check: "Usability Check",
   blast: "BLAST",
   identification: "Identification",

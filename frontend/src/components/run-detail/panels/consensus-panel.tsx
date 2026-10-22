@@ -15,6 +15,15 @@ const METHOD_LABELS: Record<string, string> = {
   agreement: "Reads agreed",
   ambiguity_consistency: "Ambiguity code resolved",
   quality_tiebreak: "Quality tiebreak",
+  gap_single_read: "Gap -- filled from one read",
+}
+
+// A "gap_single_read" position has no base at all on one side (a real
+// indel between the reads, not an unknown/placeholder value) -- render
+// that side as a plain dash rather than a bare "null".
+function formatCall(base: string | null, quality: number | null) {
+  if (base === null || quality === null) return "—"
+  return `${base} (${quality})`
 }
 
 export function ConsensusPanel({
@@ -67,12 +76,8 @@ export function ConsensusPanel({
               {notable.map((position) => (
                 <TableRow key={position.position}>
                   <TableCell>{position.position}</TableCell>
-                  <TableCell>
-                    {position.forward_base} ({position.forward_quality})
-                  </TableCell>
-                  <TableCell>
-                    {position.reverse_base} ({position.reverse_quality})
-                  </TableCell>
+                  <TableCell>{formatCall(position.forward_base, position.forward_quality)}</TableCell>
+                  <TableCell>{formatCall(position.reverse_base, position.reverse_quality)}</TableCell>
                   <TableCell className="font-medium">{position.resolved_base}</TableCell>
                   <TableCell className="text-muted-foreground">
                     {METHOD_LABELS[position.method] ?? position.method}

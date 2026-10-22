@@ -262,3 +262,130 @@ class TestBuildConsensus:
 
         with pytest.raises(ValueError):
             build_consensus("ATGC", [30] * 4, "ATGC", [30] * 4, orientation)
+
+    def test_a_single_base_gap_is_filled_from_whichever_read_has_it(self):
+        """A real single-base deletion in one read relative to the other
+        (the common case: a homopolymer run miscalled a base shorter by
+        one read) splits the overlap into two aligned blocks with a 1bp
+        gap on the forward side between them. Confirmed via a real
+        PairwiseAligner call beforehand: target_blocks=[[10,40],[41,70]],
+        query_blocks=[[0,30],[30,59]] -- a 1bp gap on forward (position
+        40) only, none on reverse.
+        """
+        overlap_template = _template(seed=7, length=60)
+        forward_prefix = "T" * 10
+        forward_sequence = forward_prefix + overlap_template
+        forward_quality = [40] * len(forward_sequence)
+
+        reverse_suffix = "G" * 10
+        reverse_sequence = overlap_template[:30] + overlap_template[31:] + reverse_suffix
+        reverse_quality = [35] * len(reverse_sequence)
+
+        orientation = OrientationResult(
+            orientation="as_is",
+            alignment_score=54.0,
+            overlap_length=59,
+            identity=1.0,
+            label_orientation_mismatch=False,
+        )
+
+        result = build_consensus(
+            forward_sequence, forward_quality, reverse_sequence, reverse_quality, orientation
+        )
+
+        # Nothing genuinely disagreed anywhere -- two clean agreement
+        # blocks plus one gap position filled from forward alone -- so
+        # the full, undeleted overlap is recovered and nothing is
+        # ambiguous.
+        expected_consensus = forward_prefix + overlap_template + reverse_suffix
+        assert result.consensus_sequence == expected_consensus
+        assert result.consensus_length == len(expected_consensus)
+        assert result.ambiguous_positions == []
+
+        gap_position = len(forward_prefix) + 30  # absolute position of the gap
+        gap_entry = next(p for p in result.resolved_positions if p.position == gap_position)
+        assert gap_entry.method == "gap_single_read"
+        assert gap_entry.changed is False
+        assert gap_entry.forward_base == overlap_template[30]
+        assert gap_entry.forward_quality == 40
+        assert gap_entry.reverse_base is None
+        assert gap_entry.reverse_quality is None
+        assert gap_entry.resolved_base == overlap_template[30]
+        assert gap_entry.resolved_quality == 40
+
+        # Every other overlap position is a plain agreement, unaffected
+        # by the gap: block 0 (30bp) + block 1 (29bp) = 59 agreements,
+        # plus the 1 gap position = the full 60bp overlap recovered.
+        agreements = [p for p in result.resolved_positions if p.method == "agreement"]
+        assert len(agreements) == 59
+        assert all(p.changed is False for p in agreements)
+
+    def test_a_gap_longer_than_max_gap_length_raises(self):
+        """The guardrail: a gap this large is treated as evidence the two
+        reads may not be a genuine single-fragment overlap at all, not
+        routine sequencing noise to silently stitch across. Confirmed via
+        a real PairwiseAligner call beforehand: a 6bp deletion here
+        produces a clean 6bp single-sided (forward) gap -- bigger than
+        the default max_gap_length (5)."""
+        overlap_template = _template(seed=7, length=60)
+        forward_sequence = overlap_template
+        forward_quality = [40] * 60
+
+        reverse_sequence = overlap_template[:27] + overlap_template[33:]
+        reverse_quality = [35] * len(reverse_sequence)
+
+        orientation = OrientationResult(orientation="as_is")
+
+        with pytest.raises(ValueError, match="exceeding the configured max_gap_length"):
+            build_consensus(
+                forward_sequence, forward_quality, reverse_sequence, reverse_quality, orientation
+            )
+
+    def test_max_gap_length_override_is_respected(self):
+        """The same 6bp gap the default rejects is accepted once the
+        caller explicitly raises the ceiling -- proves this is a real,
+        respected parameter, not just a hardcoded constant."""
+        overlap_template = _template(seed=7, length=60)
+        forward_sequence = overlap_template
+        forward_quality = [40] * 60
+
+        reverse_sequence = overlap_template[:27] + overlap_template[33:]
+        reverse_quality = [35] * len(reverse_sequence)
+
+        orientation = OrientationResult(orientation="as_is")
+
+        result = build_consensus(
+            forward_sequence, forward_quality, reverse_sequence, reverse_quality, orientation,
+            max_gap_length=6,
+        )
+
+        assert result.consensus_sequence == overlap_template
+        gap_methods = [
+            p.method for p in result.resolved_positions if p.method == "gap_single_read"
+        ]
+        assert len(gap_methods) == 6
+
+    def test_a_gap_on_both_sides_between_the_same_blocks_raises(self, monkeypatch):
+        """A genuinely rare shape (not reproduced here via a real
+        alignment, which never pairs two ungapped blocks with gaps on
+        both sides between them at once) -- exercised directly against a
+        stubbed alignment to prove the defensive check fires rather than
+        silently guessing which side to trust."""
+        import app.pipeline.consensus as consensus_module
+
+        class _FakeAlignment:
+            aligned = (
+                [[0, 10], [15, 25]],
+                [[0, 10], [13, 23]],
+            )
+
+        class _FakeAligner:
+            def align(self, *_args, **_kwargs):
+                return [_FakeAlignment()]
+
+        monkeypatch.setattr(consensus_module, "build_pairwise_aligner", lambda: _FakeAligner())
+
+        orientation = OrientationResult(orientation="as_is")
+
+        with pytest.raises(ValueError, match="not a simple single-sided indel"):
+            build_consensus("A" * 25, [40] * 25, "A" * 23, [35] * 23, orientation)

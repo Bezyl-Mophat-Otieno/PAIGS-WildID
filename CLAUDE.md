@@ -160,6 +160,8 @@ Each box above is one **Stage** record: it has a defined input, a defined output
 
 **Output:** `{ consensus_sequence: "ATCGATCG...", consensus_length: 780, ambiguous_positions: [] }`.
 
+**Gaps within the overlap (a real indel between the two reads):** the alignment can come back as more than one gap-free block, with a short gap on one side between them — most often a homopolymer run miscalled a base or two different in length by each read, a well-known Sanger artifact. Each block is merged by the same rules above, unchanged; a gap position has only one read with a real base there at all, so there's nothing to reconcile — that read's own call and quality are used as-is, recorded distinctly (never counted as an unresolved ambiguous position, since there's no disagreement). `consensus.max_gap_length` (default 5bp, pending real domain review like every other threshold) bounds how large a gap is trusted as routine sequencing noise versus treated as evidence the two reads may not be a genuine single-fragment overlap at all — a larger gap stops the run with a clear reason rather than silently stitching the reads together.
+
 ## Stage 7 — Usability check
 
 **What happens:** this is the real accept/reject gate for the sample — replacing what used to be a single upfront quality check. It runs on whatever actually survived cleanup: the consensus sequence (two-read path) or the single trimmed read (single-read path, whether that's because only one file was uploaded or the other failed Stage 3). The question here is deliberately different from Stage 3's: not "was the raw input catastrophically bad," but "is what we're about to search good enough to trust."

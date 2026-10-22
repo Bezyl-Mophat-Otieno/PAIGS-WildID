@@ -8,6 +8,7 @@ and every catalog key is unique and well-formed.
 """
 from app.configuration.catalog import CATALOG, CATALOG_BY_KEY
 from app.pipeline.blast import DEFAULT_MAX_HITS, DEFAULT_REMOTE_TIMEOUT_SECONDS
+from app.pipeline.consensus import DEFAULT_MAX_GAP_LENGTH
 from app.pipeline.identification import (
     DEFAULT_AMBIGUOUS_MARGIN_PCT,
     DEFAULT_MIN_COVERAGE_PCT,
@@ -34,6 +35,7 @@ EXPECTED_DEFAULTS = {
     "trim.min_window_size": DEFAULT_MIN_WINDOW_SIZE,
     "orientation.min_overlap_length": DEFAULT_MIN_OVERLAP_LENGTH,
     "orientation.min_identity": DEFAULT_MIN_IDENTITY,
+    "consensus.max_gap_length": DEFAULT_MAX_GAP_LENGTH,
     "usability_check.min_length": DEFAULT_MIN_LENGTH,
     "usability_check.min_mean_quality": DEFAULT_MIN_MEAN_QUALITY,
     "usability_check.max_ambiguous_proportion": DEFAULT_MAX_AMBIGUOUS_PROPORTION,
@@ -83,6 +85,7 @@ def test_value_type_matches_the_default_constants_own_python_type():
         "trim.quality_threshold",
         "trim.min_window_size",
         "orientation.min_overlap_length",
+        "consensus.max_gap_length",
         "usability_check.min_length",
         "blast.max_hits",
         "blast.remote_timeout_seconds",
